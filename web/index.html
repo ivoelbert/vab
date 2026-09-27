@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Arcade Bar</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+      }
+      canvas {
+        display: block;
+        outline: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="bevy"></canvas>
+    <script type="module">
+      // wasm-bindgen output of the `client` crate (make client).
+      import init, { push_frame } from "./pkg/client.js";
+
+      // Each game runs on its system's FBNeo core. Cores, ROM sets, BIOS sets and start-up
+      // states (emulator/snapshot.mjs) are served from R2; see README.
+      const GAMES = [
+        { core: "midway", rom: "mk2" },
+        { core: "neogeo", rom: "mslug", bios: "neogeo" },
+        { core: "snowbros", rom: "snowbrosb" },
+        { core: "capcom", rom: "mvsc" },
+        { core: "konami", rom: "ssriders" },
+      ];
+
+      await init().catch((error) => {
+        // winit ends its web event loop by throwing this on purpose.
+        if (!error.message.startsWith("Using exceptions for control flow")) {
+          throw error;
+        }
+      });
+      document.getElementById("bevy").focus();
+
+      // Browsers only allow sound after a user gesture: it starts on the first key or click.
+      const audio = new AudioContext({ sampleRate: 48000 });
+      await audio.audioWorklet.addModule("./emulator/audio.js");
+      const speaker = new AudioWorkletNode(audio, "emulator-audio", { outputChannelCount: [2] });
+      speaker.connect(audio.destination);
+      for (const event of ["keydown", "pointerdown"]) {
+        addEventListener(event, () => audio.resume(), { capture: true, once: true });
+      }
+
+      // One emulator worker per game; switching starts a fresh one.
+      let worker;
+      let current = 0;
+      window.emulatorInput = (mask) => worker?.postMessage({ type: "input", port: 0, mask });
+
+      function play(index) {
+        worker?.terminate();
+        current = (index + GAMES.length) % GAMES.length;
+        const { core, rom, bios } = GAMES[current];
+        worker = new Worker("./emulator/worker.js", { type: "module" });
+        worker.onmessage = ({ data }) => push_frame(data.rgba, data.width, data.height);
+        const { port1, port2 } = new MessageChannel();
+        speaker.port.postMessage(port1, [port1]);
+        worker.postMessage({ type: "audio", port: port2 }, [port2]);
+        worker.postMessage({
+          type: "start",
+          core: `/fbneo/${core}/fbneo.mjs`,
+          rom: `/roms/${rom}.zip`,
+          files: bios ? [`/roms/${bios}.zip`] : [],
+          state: `/roms/${rom}.state`,
+        });
+      }
+
+      // ] next game, [ previous game.
+      addEventListener("keydown", (event) => {
+        if (event.repeat) return;
+        if (event.key === "]") play(current + 1);
+        if (event.key === "[") play(current - 1);
+      });
+      play(0);
+    </script>
+  </body>
+</html>

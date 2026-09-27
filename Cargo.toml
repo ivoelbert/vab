@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = ["client", "server"]
+
+# Profiles follow Bevy's quick-start guide:
+# https://bevy.org/learn/quick-start/getting-started/setup/#compile-with-performance-optimizations
+
+# Enable a small amount of optimization in the dev profile.
+[profile.dev]
+opt-level = 1
+
+# Enable a large amount of optimization in the dev profile for dependencies.
+[profile.dev.package."*"]
+opt-level = 3
+
+# Enable more optimization in the release profile at the cost of compile time.
+[profile.release]
+# Compile the entire crate as one unit.
+codegen-units = 1
+# Do a second optimization pass over the entire program, including dependencies.
+lto = "thin"
+
+# Optimize for size in the wasm-release profile to reduce load times and bandwidth usage on web.
+# "z" + fat LTO + one codegen unit is the smallest row in Bevy's wasm size table
+# (https://github.com/bevyengine/bevy/tree/latest/examples#optimizing). `make client` then
+# runs wasm-opt -Oz. Workers static assets must stay under 25 MiB per file.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+strip = "debuginfo"

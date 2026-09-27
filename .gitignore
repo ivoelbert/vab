@@ -1,0 +1,24 @@
+# Rust
+/target
+
+# Local tool installs (wasm-bindgen-cli pinned to Cargo.lock)
+/.tools
+
+# Build outputs served as static assets
+/web/pkg
+
+# FBNeo build output (served from R2)
+/emulator/dist
+
+# Emulator toolchain + sources (emsdk, FBNeo checkout)
+/emulator/.cache
+
+# Wrangler
+.wrangler/
+node_modules/
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
+
+.DS_Store

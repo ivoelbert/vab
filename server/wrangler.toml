@@ -1,0 +1,25 @@
+name = "vab"
+main = "build/index.js"
+compatibility_date = "2026-09-26"
+
+[build]
+command = "cargo install -q \"worker-build@^0.8\" && worker-build --release"
+
+# index.html and Bevy's wasm-bindgen output (pkg/) are served as static files. Requests
+# with no matching file, like /ws/<room> and /fbneo/*, run the Worker.
+[assets]
+directory = "../web"
+
+# Files over the 25 MiB static asset limit: the FBNeo core now, ROMs later.
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "vab"
+
+[durable_objects]
+bindings = [
+  { name = "ROOM", class_name = "Room" } # the `class_name` uses the Rust struct identifier name
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
