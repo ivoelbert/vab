@@ -1,7 +1,8 @@
 # Arcade Bar
 
 The page runs arcade games full screen (FBNeo in a Web Worker, drawn by Bevy): Mortal Kombat II,
-Metal Slug, Snow Bros., Marvel vs. Capcom and Sunset Riders. The list is `GAMES` in `web/index.html`.
+Metal Slug, Snow Bros., Marvel vs. Capcom, Sunset Riders, Street Fighter II′ CE, Pac-Man, Tetris
+and Wonder Boy. The list is `GAMES` in `web/index.html`.
 
 Controls: `[` / `]` previous / next game, arrows move, `5` coin, `1` start, buttons on `A S D` and
 `Z X C` (MK II: high punch / high kick / block, low punch / low kick / block). Sound starts on the
@@ -38,7 +39,8 @@ make dev        # builds the client, serves everything at http://localhost:8787
 
 ```sh
 cd server && npx wrangler r2 bucket create vab && cd ..   # once
-make emulator-remote
+make emulator-remote                                      # cores
+make upload-rom R2_TARGET=--remote ROM=$HOME/Downloads/mk2.zip   # each ROM, BIOS and .state
 make deploy
 ```
 
@@ -61,7 +63,7 @@ Players download each file once (compressed sizes; Workers static assets cap fil
 | File | Raw | gzip |
 | --- | --- | --- |
 | Bevy client (lean features, logs below `warn` compiled out, `wasm-opt -Oz`) | ~13.8 MiB | ~4.6 MB |
-| One FBNeo core (Neo Geo, Midway, Snow Bros, Capcom, Konami) | ~5–6 MiB | ~3–3.3 MB |
+| One FBNeo core (neogeo, midway, snowbros, capcom, konami, classics) | ~5–6 MiB | ~3–3.3 MB |
 
 A cabinet loads only its system's core. To add a system, add a line to `CORES` in
 `emulator/build.sh` (driver files live under `src/burn/drv` in the FBNeo checkout).

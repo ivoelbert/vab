@@ -3,6 +3,7 @@
 
 // https://github.com/libretro/RetroArch/blob/master/libretro-common/include/libretro.h
 const ENV = {
+  SET_ROTATION: 1,
   GET_CAN_DUPE: 3,
   GET_SYSTEM_DIRECTORY: 9,
   SET_PIXEL_FORMAT: 10,
@@ -21,6 +22,7 @@ export class Core {
 
   #m;
   #pixelFormat = PIXEL_FORMAT.RGB1555;
+  #rotation = 0; // quarter turns counter-clockwise, for vertical games like Pac-Man
   #onFrame;
   #onAudio;
   #onLog;
@@ -116,6 +118,9 @@ export class Core {
   #environment(cmd, data) {
     const m = this.#m;
     switch (cmd) {
+      case ENV.SET_ROTATION:
+        this.#rotation = m.getValue(data, "i32") & 3;
+        return 1;
       case ENV.GET_CAN_DUPE:
         m.setValue(data, 1, "i8");
         return 1;
@@ -175,7 +180,13 @@ export class Core {
         }
       }
     }
-    this.#onFrame(rgba, width, height);
+    if (this.#rotation === 0) {
+      this.#onFrame(rgba, width, height);
+    } else {
+      const turned = rotate(out, width, height, this.#rotation);
+      const sideways = this.#rotation % 2 === 1;
+      this.#onFrame(new Uint8ClampedArray(turned.buffer), sideways ? height : width, sideways ? width : height);
+    }
   }
 
   #audio(data, frames) {
@@ -218,4 +229,18 @@ export class Core {
       return String(value);
     }).trimEnd();
   }
+}
+
+/** Turns a width x height image `quarterTurns` times counter-clockwise. */
+function rotate(pixels, width, height, quarterTurns) {
+  const out = new Uint32Array(pixels.length);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const pixel = pixels[y * width + x];
+      if (quarterTurns === 1) out[(width - 1 - x) * height + y] = pixel;
+      else if (quarterTurns === 2) out[(height - 1 - y) * width + (width - 1 - x)] = pixel;
+      else out[x * height + (height - 1 - y)] = pixel;
+    }
+  }
+  return out;
 }
