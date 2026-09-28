@@ -1,9 +1,16 @@
+mod cabinets;
 mod emulator;
+mod player;
 
-use bevy::camera::ScalingMode;
+use bevy::asset::AssetMetaCheck;
 use bevy::prelude::*;
+use cabinets::{Cabinets, CabinetsPlugin};
+use emulator::EmulatorPlugin;
+use player::{PlayerPlugin, Walkable, spawn_player};
+use world::{Map, map_sprite};
 
-use emulator::{EmulatorPlugin, Screen};
+/// The bar, made with the editor (`make editor`) and built into the client.
+const BAR_MAP: &str = include_str!("../../assets/maps/bar.ron");
 
 fn main() {
     App::new()
@@ -22,35 +29,42 @@ fn main() {
                     ..default()
                 })
                 // Pixel art: sample textures without smoothing.
-                .set(ImagePlugin::default_nearest()),
+                .set(ImagePlugin::default_nearest())
+                // The server only has the PNGs; don't request a .meta file for each.
+                .set(AssetPlugin {
+                    meta_check: AssetMetaCheck::Never,
+                    ..default()
+                }),
+            PlayerPlugin,
+            CabinetsPlugin,
             EmulatorPlugin,
         ))
-        .insert_resource(ClearColor(Color::BLACK))
+        .init_state::<Mode>()
+        .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.08)))
         .add_systems(Startup, setup)
         .run();
 }
 
-/// The game, filling the window at the 4:3 of an arcade monitor (letterboxed).
-fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
-    commands.spawn((
-        Camera2d,
-        // Always fit a 4 x 3 area in the window.
-        Projection::Orthographic(OrthographicProjection {
-            scaling_mode: ScalingMode::AutoMin {
-                min_width: 4.0,
-                min_height: 3.0,
-            },
-            ..OrthographicProjection::default_2d()
-        }),
-    ));
+/// Walking around the bar, or playing a cabinet's game.
+#[derive(States, Default, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum Mode {
+    #[default]
+    Walking,
+    Playing,
+}
 
-    // MK II renders 400x254, stretched to 4:3 like the original monitor.
-    commands.spawn((
-        Screen,
-        Sprite {
-            image: images.add(emulator::screen_image(400, 254)),
-            custom_size: Some(Vec2::new(4.0, 3.0)),
-            ..default()
-        },
-    ));
+fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
+    let map = Map::from_ron(BAR_MAP).expect("assets/maps/bar.ron is a valid map");
+    for placed in &map.floor {
+        commands.spawn(map_sprite(&asset_server, placed, false));
+    }
+    for placed in &map.objects {
+        commands.spawn(map_sprite(&asset_server, placed, true));
+    }
+    commands.spawn(Camera2d);
+
+    let walkable = Walkable::from_map(&map);
+    spawn_player(&mut commands, &asset_server, &walkable);
+    commands.insert_resource(walkable);
+    commands.insert_resource(Cabinets::from_map(&map));
 }

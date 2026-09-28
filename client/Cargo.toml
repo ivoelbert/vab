@@ -22,3 +22,5 @@ log = { version = "0.4", features = ["max_level_debug", "release_max_level_warn"
 tracing = { version = "0.1", features = ["max_level_debug", "release_max_level_warn"] }
 # Frames in and inputs out between Bevy and the emulator worker (src/emulator.rs).
 wasm-bindgen = "0.2"
+# The bar map and how to draw it (shared with tools/editor).
+world = { path = "../world" }

@@ -1,5 +1,6 @@
-//! Bridge to the FBNeo emulator worker (web/emulator/worker.js). The page passes each frame
-//! in through `push_frame`, and player 1's buttons go back out through `emulatorInput`.
+//! Plays a cabinet's game with the page's emulator worker (web/emulator/worker.js). Frames
+//! come in through `push_frame` and fill the screen, player 1's buttons go out through
+//! `emulatorInput`, and Esc stops the game and returns to the bar.
 
 use std::cell::RefCell;
 
@@ -7,6 +8,9 @@ use bevy::asset::RenderAssetUsages;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use wasm_bindgen::prelude::*;
+use world::Game;
+
+use crate::Mode;
 
 /// Keys and the RetroPad button ids (libretro.h) they press. FBNeo maps MK's panel to
 /// A S D = high punch, high kick, block and Z X C = low punch, low kick, block.
@@ -35,27 +39,73 @@ pub fn push_frame(rgba: Vec<u8>, width: u32, height: u32) {
     LATEST_FRAME.set(Some((UVec2::new(width, height), rgba)));
 }
 
+// Defined in index.html.
 #[wasm_bindgen]
 extern "C" {
-    /// Defined in index.html: sends player 1's RetroPad mask to the worker.
+    #[wasm_bindgen(js_name = emulatorPlay)]
+    fn emulator_play(core: &str, rom: &str, bios: Option<String>);
+    #[wasm_bindgen(js_name = emulatorStop)]
+    fn emulator_stop();
+    /// Sends player 1's RetroPad mask to the worker.
     #[wasm_bindgen(js_name = emulatorInput)]
     fn emulator_input(mask: u16);
+}
+
+/// Starts a game; switch to `Mode::Playing` to show it.
+pub fn play(game: &Game) {
+    LATEST_FRAME.set(None);
+    emulator_play(&game.core, &game.rom, game.bios.clone());
 }
 
 pub struct EmulatorPlugin;
 
 impl Plugin for EmulatorPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (show_latest_frame, send_input));
+        app.add_systems(OnEnter(Mode::Playing), show_screen)
+            .add_systems(
+                Update,
+                (show_latest_frame, send_input, leave).run_if(in_state(Mode::Playing)),
+            )
+            .add_systems(OnExit(Mode::Playing), stop);
     }
 }
 
-/// Marks the sprite that shows the game.
+/// The black overlay covering the bar while a game plays.
 #[derive(Component)]
-pub struct Screen;
+struct Overlay;
 
-/// A black image the size of a game frame, for the screen sprite to start with.
-pub fn screen_image(width: u32, height: u32) -> Image {
+/// The image node that shows the game.
+#[derive(Component)]
+struct Screen;
+
+fn show_screen(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+    commands.spawn((
+        Overlay,
+        Node {
+            position_type: PositionType::Absolute,
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..default()
+        },
+        BackgroundColor(Color::BLACK),
+        GlobalZIndex(1),
+        children![(
+            Screen,
+            ImageNode::new(images.add(screen_image(4, 3))),
+            Node {
+                height: Val::Percent(100.0),
+                max_width: Val::Percent(100.0),
+                aspect_ratio: Some(4.0 / 3.0),
+                ..default()
+            },
+        )],
+    ));
+}
+
+/// A black image the size of a game frame, for the screen to start with.
+fn screen_image(width: u32, height: u32) -> Image {
     Image::new_fill(
         Extent3d {
             width,
@@ -71,23 +121,22 @@ pub fn screen_image(width: u32, height: u32) -> Image {
 
 fn show_latest_frame(
     mut images: ResMut<Assets<Image>>,
-    mut screens: Query<&mut Sprite, With<Screen>>,
+    mut screens: Query<(&ImageNode, &mut Node), With<Screen>>,
 ) {
     let Some((size, rgba)) = LATEST_FRAME.take() else {
         return;
     };
-    for mut sprite in &mut screens {
-        let Some(mut image) = images.get_mut(&sprite.image) else {
+    for (image_node, mut node) in &mut screens {
+        let Some(mut image) = images.get_mut(&image_node.image) else {
             continue;
         };
         if image.size() != size {
             *image = screen_image(size.x, size.y);
-            // Arcade monitors were 4:3, or 3:4 when mounted vertically (Pac-Man). The camera
-            // fits a 4 x 3 area, so a vertical screen is 2.25 x 3.
-            sprite.custom_size = Some(if size.x >= size.y {
-                Vec2::new(4.0, 3.0)
+            // Arcade monitors were 4:3, or 3:4 when mounted vertically (Pac-Man).
+            node.aspect_ratio = Some(if size.x >= size.y {
+                4.0 / 3.0
             } else {
-                Vec2::new(2.25, 3.0)
+                3.0 / 4.0
             });
         }
         image.data = Some(rgba.clone());
@@ -102,5 +151,19 @@ fn send_input(keys: Res<ButtonInput<KeyCode>>, mut sent: Local<u16>) {
     if mask != *sent {
         emulator_input(mask);
         *sent = mask;
+    }
+}
+
+fn leave(keys: Res<ButtonInput<KeyCode>>, mut mode: ResMut<NextState<Mode>>) {
+    if keys.just_pressed(KeyCode::Escape) {
+        mode.set(Mode::Walking);
+    }
+}
+
+fn stop(mut commands: Commands, overlays: Query<Entity, With<Overlay>>) {
+    emulator_stop();
+    LATEST_FRAME.set(None);
+    for overlay in &overlays {
+        commands.entity(overlay).despawn();
     }
 }

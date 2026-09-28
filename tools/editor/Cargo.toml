@@ -1,0 +1,11 @@
+[package]
+name = "editor"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Desktop-only dev tool (`make editor`); never part of the web build.
+[dependencies]
+bevy = { version = "0.19.1", default-features = false, features = ["2d", "file_watcher"] }
+bevy_egui = "0.42"
+world = { path = "../../world" }

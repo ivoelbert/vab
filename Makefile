@@ -9,7 +9,7 @@ WASM_BINDGEN := .tools/bin/wasm-bindgen
 # wasm-opt comes with the pinned emsdk.
 WASM_OPT := emulator/.cache/emsdk/upstream/bin/wasm-opt
 
-.PHONY: client emulator emulator-remote upload-emulator upload-rom dev deploy
+.PHONY: client emulator emulator-remote upload-emulator upload-rom dev deploy editor
 
 $(WASM_BINDGEN): Cargo.lock
 	cargo install wasm-bindgen-cli --version $(WASM_BINDGEN_VERSION) --root .tools --locked
@@ -17,8 +17,10 @@ $(WASM_BINDGEN): Cargo.lock
 $(WASM_OPT):
 	./emulator/emsdk.sh
 
-# Bevy client -> web/pkg/ (https://github.com/bevyengine/bevy/tree/latest/examples#wasm)
+# Bevy client -> web/pkg/ (https://github.com/bevyengine/bevy/tree/latest/examples#wasm),
+# plus its art -> web/assets/.
 client: $(WASM_BINDGEN) $(WASM_OPT)
+	rm -rf web/assets && cp -R assets web/assets
 	cargo build -p client --profile $(PROFILE) --target wasm32-unknown-unknown
 	$(WASM_BINDGEN) --out-dir web/pkg --target web \
 		target/wasm32-unknown-unknown/$(PROFILE_DIR)/client.wasm
@@ -58,3 +60,7 @@ dev: client
 
 deploy: client
 	cd server && npx wrangler deploy
+
+# Bar layout editor (desktop dev tool, not deployed). Saves assets/maps/bar.ron.
+editor:
+	cargo run -p editor

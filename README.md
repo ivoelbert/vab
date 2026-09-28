@@ -1,18 +1,18 @@
 # Arcade Bar
 
-The page runs arcade games full screen (FBNeo in a Web Worker, drawn by Bevy): Mortal Kombat II,
-Metal Slug, Snow Bros., Marvel vs. Capcom, Sunset Riders, Street Fighter II′ CE, Pac-Man, Tetris
-and Wonder Boy. The list is `GAMES` in `web/index.html`.
-
-Controls: `[` / `]` previous / next game, arrows move, `5` coin, `1` start, buttons on `A S D` and
-`Z X C` (MK II: high punch / high kick / block, low punch / low kick / block). Sound starts on the
-first key press or click.
+The page shows the bar from `assets/maps/bar.ron` (made with `make editor`) and a placeholder
+player: arrows or WASD walk, and floor tiles without an object are walkable. The FBNeo emulator
+(`web/emulator/`, `client/src/emulator.rs`) and the games in R2 are kept for cabinets, but the
+page doesn't start them yet.
 
 | Path | What | Built with |
 | --- | --- | --- |
 | `client/` | Bevy app, mounted on `<canvas id="bevy">` | `cargo` + `wasm-bindgen` → `web/pkg/` |
 | `server/` | Worker + `Room` Durable Object (WebSocket Hibernation) | `workers-rs` template, `wrangler` |
 | `emulator/` | Per-system FBNeo libretro cores as Emscripten ES modules | emsdk + FBNeo's Makefile → `emulator/dist/<core>/` |
+| `world/` | Map format, isometric grid math, tile drawing (shared by the editor and, later, the client) | |
+| `tools/editor/` | Bar layout editor, desktop only (`make editor`) | `cargo`, `bevy_egui` |
+| `assets/` | Tile art (`tiles/`) and maps (`maps/`) | |
 | `web/` | Static assets: `index.html`, Bevy's `pkg/`, the emulator worker + libretro frontend in `emulator/` | |
 
 Routes: static files from `web/`, `GET /ws/:room` (WebSocket to that room's Durable Object), `GET /fbneo/<core>/fbneo.{mjs,wasm}` (FBNeo cores) and `GET /roms/<file>` (ROM sets), both from R2.
@@ -34,6 +34,19 @@ make dev        # builds the client, serves everything at http://localhost:8787
 ```
 
 `make client PROFILE=dev` skips the size optimizations for faster iteration.
+
+## Dev tools
+
+`make editor` opens the bar layout editor, a desktop app that is never part of the web build.
+
+- The palette is every PNG in `assets/tiles/floor/` and `assets/tiles/objects/`. Floor tiles are
+  32×16 diamonds drawn centered on their cell. Objects are 32 px wide and any height: the bottom
+  point of the image sits on the bottom point of the cell's diamond.
+- Left click paints, right click erases, scroll / arrows / WASD pan, `+` / `-` zoom,
+  Cmd+S saves `assets/maps/bar.ron`.
+- Cabinets get the ROM set typed in "Cabinet game" (e.g. `mk2`).
+- Images reload when their files change, so you can edit art in a pixel-art app with the editor
+  open. The current tiles are placeholders.
 
 ## Deploy
 

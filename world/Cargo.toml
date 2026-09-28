@@ -1,0 +1,10 @@
+[package]
+name = "world"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Only what drawing a map needs, so crates using it keep their own lean feature lists.
+bevy = { version = "0.19.1", default-features = false, features = ["bevy_asset", "bevy_image", "bevy_sprite", "png"] }
+ron = "0.12"
+serde = { version = "1", features = ["derive"] }

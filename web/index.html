@@ -21,30 +21,10 @@
   <body>
     <canvas id="bevy"></canvas>
     <script type="module">
-      // wasm-bindgen output of the `client` crate (make client).
+      // wasm-bindgen output of the `client` crate (make client): the bar, the player and the
+      // cabinets. Bevy starts and stops games through the functions below
+      // (client/src/emulator.rs).
       import init, { push_frame } from "./pkg/client.js";
-
-      // Each game runs on its system's FBNeo core. Cores, ROM sets, BIOS sets and start-up
-      // states (emulator/snapshot.mjs) are served from R2; see README.
-      const GAMES = [
-        { core: "midway", rom: "mk2" },
-        { core: "neogeo", rom: "mslug", bios: "neogeo" },
-        { core: "snowbros", rom: "snowbrosb" },
-        { core: "capcom", rom: "mvscu" },
-        { core: "konami", rom: "ssriders" },
-        { core: "capcom", rom: "sf2ce" },
-        { core: "classics", rom: "pacman" },
-        { core: "classics", rom: "atetris" },
-        { core: "classics", rom: "wboy" },
-      ];
-
-      await init().catch((error) => {
-        // winit ends its web event loop by throwing this on purpose.
-        if (!error.message.startsWith("Using exceptions for control flow")) {
-          throw error;
-        }
-      });
-      document.getElementById("bevy").focus();
 
       // Browsers only allow sound after a user gesture: it starts on the first key or click.
       const audio = new AudioContext({ sampleRate: 48000 });
@@ -55,15 +35,11 @@
         addEventListener(event, () => audio.resume(), { capture: true, once: true });
       }
 
-      // One emulator worker per game; switching starts a fresh one.
+      // One emulator worker per game (web/emulator/worker.js). Cores, ROM sets, BIOS sets and
+      // start-up states (emulator/snapshot.mjs) are served from R2.
       let worker;
-      let current = 0;
-      window.emulatorInput = (mask) => worker?.postMessage({ type: "input", port: 0, mask });
-
-      function play(index) {
+      window.emulatorPlay = (core, rom, bios) => {
         worker?.terminate();
-        current = (index + GAMES.length) % GAMES.length;
-        const { core, rom, bios } = GAMES[current];
         worker = new Worker("./emulator/worker.js", { type: "module" });
         worker.onmessage = ({ data }) => push_frame(data.rgba, data.width, data.height);
         const { port1, port2 } = new MessageChannel();
@@ -76,15 +52,20 @@
           files: bios ? [`/roms/${bios}.zip`] : [],
           state: `/roms/${rom}.state`,
         });
-      }
+      };
+      window.emulatorStop = () => {
+        worker?.terminate();
+        worker = undefined;
+      };
+      window.emulatorInput = (mask) => worker?.postMessage({ type: "input", port: 0, mask });
 
-      // ] next game, [ previous game.
-      addEventListener("keydown", (event) => {
-        if (event.repeat) return;
-        if (event.key === "]") play(current + 1);
-        if (event.key === "[") play(current - 1);
+      await init().catch((error) => {
+        // winit ends its web event loop by throwing this on purpose.
+        if (!error.message.startsWith("Using exceptions for control flow")) {
+          throw error;
+        }
       });
-      play(0);
+      document.getElementById("bevy").focus();
     </script>
   </body>
 </html>
