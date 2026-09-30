@@ -1,0 +1,54 @@
+diff --git a/src/burn/burn.cpp b/src/burn/burn.cpp
+index 3674759..1189a39 100644
+--- a/src/burn/burn.cpp
++++ b/src/burn/burn.cpp
+@@ -1205,6 +1205,7 @@ INT32 BurnAreaScan(INT32 nAction, INT32* pnMin)
+ 	// Handle any MAME-style variables
+ 	if (nAction & ACB_DRIVER_DATA) {
+ 		nRet = BurnStateMAMEScan(nAction, pnMin);
++		ProcessJoystickScan(nAction);
+ 	}
+ 
+ 	// Forward to the driver
+diff --git a/src/burn/devices/joyprocess.cpp b/src/burn/devices/joyprocess.cpp
+index 518b28f..c42996e 100644
+--- a/src/burn/devices/joyprocess.cpp
++++ b/src/burn/devices/joyprocess.cpp
+@@ -4,12 +4,22 @@
+ 
+ INT32 nSocd[6] = { 3,3,3,3,3,3 };	// Last Input Priority (8 Way)
+ 
++// 4-way buffers: how a diagonal resolves depends on earlier frames, so they are part of the
++// machine's state (rollback netplay re-runs frames from a savestate and must get the same result)
++static INT32 fourway[4]      = { 0, 0, 0, 0 };
++static UINT8 DrvInputPrev[4] = { 0, 0, 0, 0 };
++
++void ProcessJoystickScan(INT32 nAction)
++{
++	if (nAction & ACB_DRIVER_DATA) {
++		SCAN_VAR(fourway);
++		SCAN_VAR(DrvInputPrev);
++	}
++}
++
+ // Digital Processing
+ void ProcessJoystick(UINT8 *input, INT8 playernum, INT8 up_bit, INT8 down_bit, INT8 left_bit, INT8 right_bit, UINT8 flags)
+ { // limitations: 4 players max., processes 8-bit inputs only!
+-	static INT32 fourway[4]      = { 0, 0, 0, 0 }; // 4-way buffer
+-	static UINT8 DrvInputPrev[4] = { 0, 0, 0, 0 }; // 4-way buffer
+-
+ 	if (flags & INPUT_ISACTIVELOW) {
+ 		*input ^= 0xff;
+ 	}
+diff --git a/src/burn/devices/joyprocess.h b/src/burn/devices/joyprocess.h
+index 89fefc4..327f35b 100644
+--- a/src/burn/devices/joyprocess.h
++++ b/src/burn/devices/joyprocess.h
+@@ -13,6 +13,7 @@
+ // INPUT_4WAY_ALT: holds previous non-diagonal direction until diagonal is released
+ 
+ void ProcessJoystick(UINT8 *input, INT8 playernum, INT8 up_bit, INT8 down_bit, INT8 left_bit, INT8 right_bit, UINT8 flags);
++void ProcessJoystickScan(INT32 nAction);
+ void CompileInput(UINT8 **input, void *output, INT32 num, INT32 bits, UINT32 *init);
+ 
+ // ---[ ProcessAnalog()

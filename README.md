@@ -65,9 +65,20 @@ make deploy
 | Bevy | 0.19.1 | `client/Cargo.toml` |
 | workers-rs | 0.8 | `server/Cargo.toml` |
 | Emscripten | 6.0.10 | `emulator/emsdk.sh` |
-| FBNeo | `aceeebed` (libretro/FBNeo) | `emulator/build.sh` |
+| FBNeo | `aceeebed` (libretro/FBNeo) + `emulator/patches/` | `emulator/build.sh` |
 
 ROM sets must match the FBNeo commit; bump them together. FBNeo's license is non-commercial.
+
+## Rollback netplay
+
+Online play re-runs frames from save states, so both players' machines must end up identical.
+`emulator/patches/` adds state FBNeo keeps outside its save states (the 4-way joystick's last
+direction, the YM2151's render position). After rebuilding the cores or bumping FBNeo, check each
+game (a rollback on every frame, compared with playing straight through on another instance):
+
+```sh
+node emulator/rollback-check.mjs emulator/dist/midway/fbneo.mjs $HOME/Downloads/mk2.zip emulator/dist/mk2.state
+```
 
 ## Sizes
 

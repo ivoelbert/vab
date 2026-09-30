@@ -12,6 +12,17 @@ const ENV = {
   GET_LOG_INTERFACE: 27,
   GET_SAVE_DIRECTORY: 31,
   GET_CORE_OPTIONS_VERSION: 52,
+  GET_AUDIO_VIDEO_ENABLE: 47 | 0x10000,
+  GET_SAVESTATE_CONTEXT: 72 | 0x10000,
+};
+const SAVESTATE_CONTEXT = { NORMAL: 0, ROLLBACK_NETPLAY: 3 };
+const MEMORY_SYSTEM_RAM = 2;
+
+// Core options we override; the rest keep FBNeo's defaults.
+const OPTIONS = {
+  // The default opens the service menu when Start is held for a second, counting frames outside
+  // the savestate, so a rollback could open it on one player's machine only.
+  "fbneo-diagnostic-input": "None",
 };
 const PIXEL_FORMAT = { RGB1555: 0, XRGB8888: 1, RGB565: 2 };
 const DEVICE_JOYPAD = 1;
@@ -19,8 +30,20 @@ const DEVICE_JOYPAD = 1;
 export class Core {
   /** Per-port RetroPad masks: bit (1 << id) per held button, ids from libretro.h. */
   inputs = new Uint16Array(4);
+  /**
+   * Rollback netplay: FBNeo then keeps its states free of anything machine-local
+   * (hiscores, the host clock) so both players' machines stay identical.
+   */
+  netplay = false;
+  /**
+   * False while re-running frames after a rollback: FBNeo skips drawing and keeps the sound to
+   * itself (it still emulates it, so the machine stays exact).
+   */
+  present = true;
 
   #m;
+  #slots = [];
+  #slotSize = 0;
   #pixelFormat = PIXEL_FORMAT.RGB1555;
   #rotation = 0; // quarter turns counter-clockwise, for vertical games like Pac-Man
   #onFrame;
@@ -115,6 +138,46 @@ export class Core {
     if (!ok) throw new Error("The core could not load the state");
   }
 
+  /**
+   * Allocates `count` save-state slots inside the core's memory. Rollback saves every frame,
+   * so saveSlot / loadSlot copy within wasm memory and never into JavaScript.
+   */
+  allocSlots(count) {
+    const m = this.#m;
+    this.#slots.forEach((ptr) => m._free(ptr));
+    this.#slotSize = m._retro_serialize_size();
+    this.#slots = Array.from({ length: count }, () => m._malloc(this.#slotSize));
+  }
+
+  saveSlot(slot) {
+    if (!this.#m._retro_serialize(this.#slots[slot], this.#slotSize)) {
+      throw new Error("The core could not save its state");
+    }
+  }
+
+  loadSlot(slot) {
+    if (!this.#m._retro_unserialize(this.#slots[slot], this.#slotSize)) {
+      throw new Error("The core could not load the state");
+    }
+  }
+
+  /**
+   * The game's main RAM (what RetroAchievements reads). Both players' copies match while in
+   * sync, unlike whole savestates, which also hold sound and drawing caches.
+   * A view valid until the next allocation in the core.
+   */
+  systemRam() {
+    const m = this.#m;
+    const ptr = m._retro_get_memory_data(MEMORY_SYSTEM_RAM);
+    return m.HEAPU8.subarray(ptr, ptr + m._retro_get_memory_size(MEMORY_SYSTEM_RAM));
+  }
+
+  /** A view of a slot's bytes, valid until the next allocation in the core. */
+  slotBytes(slot) {
+    const ptr = this.#slots[slot];
+    return this.#m.HEAPU8.subarray(ptr, ptr + this.#slotSize);
+  }
+
   #environment(cmd, data) {
     const m = this.#m;
     switch (cmd) {
@@ -141,14 +204,30 @@ export class Core {
           this.#onLog(level, this.#format(fmt, args)), "viii"), "i32");
         return 1;
       case ENV.GET_CORE_OPTIONS_VERSION:
-        // Version 0: the core sets plain variables and we answer none, so it uses defaults.
+        // Version 0: the core sets plain variables and asks for each (GET_VARIABLE below).
         m.setValue(data, 0, "i32");
         return 1;
+      case ENV.GET_VARIABLE: {
+        // struct retro_variable { const char *key; const char *value; }
+        const value = OPTIONS[m.UTF8ToString(m.getValue(data, "i32"))];
+        if (value === undefined) return 0;
+        m.setValue(data + 4, this.#cString(value), "i32");
+        return 1;
+      }
       case ENV.GET_VARIABLE_UPDATE:
         m.setValue(data, 0, "i8");
         return 1;
+      case ENV.GET_AUDIO_VIDEO_ENABLE:
+        m.setValue(data, this.present ? 1 | 2 : 0, "i32"); // bit 0 video, bit 1 audio
+        return 1;
+      case ENV.GET_SAVESTATE_CONTEXT:
+        // The core first asks with no pointer, only to learn that we answer.
+        if (data) {
+          const context = this.netplay ? SAVESTATE_CONTEXT.ROLLBACK_NETPLAY : SAVESTATE_CONTEXT.NORMAL;
+          m.setValue(data, context, "i32");
+        }
+        return 1;
       default:
-        // Includes GET_VARIABLE: no overrides, keep the core's defaults.
         return 0;
     }
   }

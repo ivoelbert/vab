@@ -3,11 +3,14 @@
 # emulator/dist/<core>/. They are served from R2 (`make emulator` uploads them to local R2).
 #
 #   1. Installs the pinned emsdk (emsdk.sh)
-#   2. Checks out a pinned libretro/FBNeo commit into emulator/.cache/FBNeo
+#   2. Checks out a pinned libretro/FBNeo commit into emulator/.cache/FBNeo and applies our
+#      fixes from emulator/patches/
 #   3. Builds each core with FBNeo's own Makefile (platform=emscripten), as documented in
 #      src/burner/libretro/README.md, keeping only that core's drivers
 #   4. Links it into fbneo.mjs + fbneo.wasm, exporting the libretro API (exports.json) so
 #      our own frontend can drive retro_run / retro_serialize directly
+#
+# ./emulator/build.sh konami capcom rebuilds just those cores.
 #
 # ROM sets must match the pinned FBNeo commit: bump FBNEO_COMMIT and the ROMs together.
 set -euo pipefail
@@ -52,8 +55,14 @@ if [ ! -d "$FBNEO_DIR/.git" ]; then
 fi
 if [ "$(git -C "$FBNEO_DIR" rev-parse HEAD 2>/dev/null)" != "$FBNEO_COMMIT" ]; then
   git -C "$FBNEO_DIR" fetch --depth 1 origin "$FBNEO_COMMIT"
-  git -C "$FBNEO_DIR" checkout -q FETCH_HEAD
+  git -C "$FBNEO_DIR" checkout -q --force FETCH_HEAD # drops patches applied to the old commit
 fi
+# Our fixes on top, each applied once (a patch that reverses cleanly is already in).
+for patch in "$ROOT"/emulator/patches/*.patch; do
+  if ! git -C "$FBNEO_DIR" apply --reverse --check "$patch" 2>/dev/null; then
+    git -C "$FBNEO_DIR" apply "$patch"
+  fi
+done
 
 # The emscripten platform sets STATIC_LINKING=1, which leaves out the libretro-common
 # helpers RetroArch normally provides (Makefile.common). We link without RetroArch, so
@@ -74,9 +83,10 @@ for src in \
   COMMON_OBJS+=("$obj")
 done
 
-rm -rf "$OUT_DIR"
 for core in "${CORES[@]}"; do
   name="${core%%|*}"
+  if [ $# -gt 0 ] && [[ " $* " != *" $name "* ]]; then continue; fi
+  rm -rf "${OUT_DIR:?}/$name"
   keep="${core#*|}"
 
   # 3. Core archive. BURN_BLACKLIST (read by Makefile.all) drops every other driver, and
