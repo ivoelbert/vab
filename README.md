@@ -53,11 +53,18 @@ make dev        # builds the client, serves everything at http://localhost:8787
 
 ## Deploy
 
+Merging to `main` deploys the site (`.github/workflows/ci.yml`): the Worker, its Room Durable
+Object and everything in `web/`. Pull requests get the same build and checks without deploying.
+The workflow needs two repository secrets: `CLOUDFLARE_API_TOKEN` (a token made from the "Edit
+Cloudflare Workers" template) and `CLOUDFLARE_ACCOUNT_ID`.
+
+Cores, ROMs and start-up states live in R2 and go up by hand, when they change:
+
 ```sh
 cd server && npx wrangler r2 bucket create vab && cd ..   # once
 make emulator-remote                                      # cores
 make upload-rom R2_TARGET=--remote ROM=$HOME/Downloads/mk2.zip   # each ROM, BIOS and .state
-make deploy
+make deploy                                               # or merge to main
 ```
 
 A preview Worker, `vab-preview`, runs the same site with its own rooms and its own R2 bucket, for
