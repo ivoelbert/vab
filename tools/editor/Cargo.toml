@@ -8,4 +8,7 @@ publish = false
 [dependencies]
 bevy = { version = "0.19.1", default-features = false, features = ["2d", "file_watcher"] }
 bevy_egui = "0.42"
+image = { version = "0.25", default-features = false, features = ["png"] }
+ron = "0.12"
+serde = { version = "1", features = ["derive"] }
 world = { path = "../../world" }

@@ -11,7 +11,7 @@ pub const TILE_HEIGHT: f32 = 16.0;
 
 /// Everything placed on the grid. Tile names are PNG paths under assets/tiles/ without the
 /// extension, e.g. "floor/wood" or "objects/cabinet".
-#[derive(Serialize, Deserialize, Default, Clone, Debug)]
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq)]
 pub struct Map {
     pub floor: Vec<Placed>,
     pub objects: Vec<Placed>,
