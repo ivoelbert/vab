@@ -38,6 +38,8 @@
 
       // The bar room this page is in (server/src/lib.rs): ?room=<name> for a private one.
       let room;
+      let roomReady;
+      const joined = new Promise((resolve) => (roomReady = resolve));
       let firstMove;
       window.roomMove = (x, y, flip) => (room ? room.move(x, y, flip) : (firstMove = [x, y, flip]));
 
@@ -257,16 +259,17 @@
       }
 
       let play;
-      window.emulatorPlay = (core, rom, bios, cabinet, turns, players) => {
+      window.emulatorPlay = async (core, rom, bios, cabinet, turns, players) => {
         play?.stop();
-        play = new Play({ core, rom, bios, turns, players, cabinet });
+        const current = (play = new Play({ core, rom, bios, turns, players, cabinet }));
         game_status("Taking a seat...");
-        room.sit(cabinet, players);
+        await joined;
+        if (play === current) room.sit(cabinet, players);
       };
       window.emulatorStop = () => {
         play?.stop();
         play = undefined;
-        room.stand();
+        room?.stand();
       };
       window.emulatorInput = (mask) => play?.input(mask);
 
@@ -294,6 +297,7 @@
         handover: (from, epoch, bytes) => play?.handover(from, epoch, bytes),
       });
       if (firstMove) room.move(...firstMove);
+      roomReady();
       document.getElementById("bevy").focus();
     </script>
   </body>
