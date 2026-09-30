@@ -1,7 +1,11 @@
-//! Cabinets with a game (assigned in the editor): next to one, a hint shows its title and E
-//! starts it.
+//! Cabinets with a game (assigned in the editor): next to one, a hint shows its title and how
+//! many play it, and E sits you at it (online with whoever sits at the other seat).
+
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 use bevy::prelude::*;
+use wasm_bindgen::prelude::*;
 use world::{Game, Map, cell_to_world, games_from_ron, world_to_cell};
 
 use crate::Mode;
@@ -12,6 +16,17 @@ use crate::player::Player;
 const GAMES: &str = include_str!("../../assets/games.ron");
 /// Where the hint sits: a little above a cabinet's top, in world pixels from its cell.
 const HINT_HEIGHT: f32 = 44.0;
+
+thread_local! {
+    /// How many sit at each cabinet ("x,y"), from the room.
+    static SEATED: RefCell<HashMap<String, u32>> = RefCell::new(HashMap::new());
+}
+
+/// Called by index.html when the players at a cabinet change.
+#[wasm_bindgen]
+pub fn cabinet_seats(cabinet: String, count: u32) {
+    SEATED.with_borrow_mut(|seated| seated.insert(cabinet, count));
+}
 
 pub struct CabinetsPlugin;
 
@@ -96,7 +111,17 @@ fn show_hint(
     let Ok(on_screen) = camera.world_to_viewport(camera_transform, above.extend(0.0)) else {
         return;
     };
-    let label = format!("E  {}", game.title);
+    let seated = SEATED.with_borrow(|seated| {
+        seated
+            .get(&emulator::cabinet_id(*cell))
+            .copied()
+            .unwrap_or(0)
+    });
+    let label = match seated {
+        0 => format!("E  {}", game.title),
+        1 => format!("E  {} - 1 playing, join in", game.title),
+        _ => format!("{} - 2 playing", game.title),
+    };
     if text.0 != label {
         text.0 = label;
     }
@@ -115,8 +140,8 @@ fn play(
     if !keys.just_pressed(KeyCode::KeyE) {
         return;
     }
-    if let Some((_, game)) = cabinets.next_to(player.feet) {
-        emulator::play(game);
+    if let Some((cell, game)) = cabinets.next_to(player.feet) {
+        emulator::play(*cell, game);
         mode.set(Mode::Playing);
     }
 }

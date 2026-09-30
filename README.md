@@ -1,21 +1,23 @@
 # Arcade Bar
 
 The page shows the bar from `assets/maps/bar.ron` (made with `make editor`) and a placeholder
-player: arrows or WASD walk, and floor tiles without an object are walkable. The FBNeo emulator
-(`web/emulator/`, `client/src/emulator.rs`) and the games in R2 are kept for cabinets, but the
-page doesn't start them yet.
+player: arrows or WASD walk, and floor tiles without an object are walkable. Everyone on the page
+is in the same bar room and sees the others walk around (`?room=<name>` opens a separate one).
+E next to a cabinet sits you at it and starts its game: alone at first, and online with whoever
+sits at the other seat (see [Online play](#online-play)). Esc stands up.
 
 | Path | What | Built with |
 | --- | --- | --- |
 | `client/` | Bevy app, mounted on `<canvas id="bevy">` | `cargo` + `wasm-bindgen` → `web/pkg/` |
 | `server/` | Worker + `Room` Durable Object (WebSocket Hibernation) | `workers-rs` template, `wrangler` |
+| `netplay/` | Rollback for two players at a cabinet (GGRS), run by the emulator worker | `cargo` + `wasm-bindgen` → `web/netplay/` |
 | `emulator/` | Per-system FBNeo libretro cores as Emscripten ES modules | emsdk + FBNeo's Makefile → `emulator/dist/<core>/` |
 | `world/` | Map format, isometric grid math, tile drawing (shared by the editor and, later, the client) | |
 | `tools/editor/` | Bar layout editor, desktop only (`make editor`) | `cargo`, `bevy_egui` |
 | `assets/` | Tile art (`tiles/`) and maps (`maps/`) | |
-| `web/` | Static assets: `index.html`, Bevy's `pkg/`, the emulator worker + libretro frontend in `emulator/` | |
+| `web/` | Static assets: `index.html`, the room connection (`room.js`), Bevy's `pkg/`, the emulator worker + libretro frontend in `emulator/` | |
 
-Routes: static files from `web/`, `GET /ws/:room` (WebSocket to that room's Durable Object), `GET /fbneo/<core>/fbneo.{mjs,wasm}` (FBNeo cores) and `GET /roms/<file>` (ROM sets), both from R2.
+Routes: static files from `web/`, `GET /ws/:room` (WebSocket to that room's Durable Object), `GET /ice` (WebRTC servers), `GET /fbneo/<core>/fbneo.{mjs,wasm}` (FBNeo cores) and `GET /roms/<file>` (ROM sets), both from R2.
 
 ## Setup
 
@@ -57,6 +59,21 @@ make upload-rom R2_TARGET=--remote ROM=$HOME/Downloads/mk2.zip   # each ROM, BIO
 make deploy
 ```
 
+A preview Worker, `vab-preview`, runs the same site with its own rooms and its own R2 bucket, for
+trying changes on several computers before they reach the site:
+
+```sh
+cd server && npx wrangler r2 bucket create vab-preview && cd ..   # once
+make emulator-remote R2_BUCKET=vab-preview
+make upload-rom R2_TARGET=--remote R2_BUCKET=vab-preview ROM=$HOME/Downloads/mk2.zip   # each
+make preview    # https://vab-preview.<account>.workers.dev
+```
+
+TURN (optional, per Worker): create a TURN key in the Cloudflare dashboard (Realtime → TURN
+Server), then `npx wrangler secret put TURN_KEY_ID` and `npx wrangler secret put
+TURN_KEY_API_TOKEN` in `server/` (add `--env preview` for the preview). Without it, players whose
+browsers can't connect directly play through the room instead, which is slower.
+
 ## Pinned versions
 
 | | Version | Where |
@@ -78,6 +95,27 @@ game (a rollback on every frame, compared with playing straight through on anoth
 
 ```sh
 node emulator/rollback-check.mjs emulator/dist/midway/fbneo.mjs $HOME/Downloads/mk2.zip emulator/dist/mk2.state
+```
+
+## Online play
+
+The first player to sit at a cabinet gets seat 1 (player 1's controls), the second seat 2. Both
+restart the game from its start-up state and run it in step with GGRS (`netplay/`) in their
+emulator workers: each machine guesses the other player's input and re-runs frames when the real
+one arrives. The worker picks the rollback limit from how fast the machine runs the game (Mortal
+Kombat II gets 3 frames and 3 frames of input delay on an M-series Mac, the rest 8 and 2). GGRS
+compares a hash of the game's RAM every 60 frames and reports any desync.
+
+Packets go through the room's WebSocket at first and straight between the browsers over WebRTC
+once that connects (`web/room.js`). When one player leaves, the other plays on alone. Turn-based
+games (`turns` in `assets/games.ron`) use player 1's controls for both players, like an upright
+cabinet.
+
+`emulator/netplay-check.mjs` plays a game between two workers in Node over a simulated network
+(needs `make netplay`):
+
+```sh
+node emulator/netplay-check.mjs emulator/dist/konami/fbneo.mjs $HOME/Downloads/ssriders.zip emulator/dist/ssriders.state
 ```
 
 ## Sizes

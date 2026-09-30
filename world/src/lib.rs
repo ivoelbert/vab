@@ -38,6 +38,10 @@ pub struct Game {
     /// A BIOS set loaded next to the ROM, e.g. "neogeo".
     #[serde(default)]
     pub bios: Option<String>,
+    /// Players take turns on player 1's controls (Pac-Man, Wonder Boy), as on an upright
+    /// cabinet, so online player 2 plays through them too.
+    #[serde(default)]
+    pub turns: bool,
 }
 
 pub fn games_from_ron(text: &str) -> Result<Vec<Game>, ron::error::SpannedError> {
@@ -131,7 +135,14 @@ mod tests {
         let games = games_from_ron(include_str!("../../assets/games.ron")).unwrap();
         let mslug = games.iter().find(|g| g.rom == "mslug").unwrap();
         assert_eq!(mslug.bios.as_deref(), Some("neogeo"));
-        assert!(games.iter().find(|g| g.rom == "mk2").unwrap().bios.is_none());
+        assert!(
+            games
+                .iter()
+                .find(|g| g.rom == "mk2")
+                .unwrap()
+                .bios
+                .is_none()
+        );
     }
 
     #[test]

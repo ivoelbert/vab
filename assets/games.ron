@@ -1,6 +1,7 @@
 // Games cabinets can run (a cabinet's `game` in maps/bar.ron is a `rom` from this list).
 // `rom` is the ROM set in R2 (/roms/<rom>.zip, plus the optional <rom>.state), `core` the FBNeo
-// core that runs it (emulator/build.sh), and `bios` a BIOS set loaded next to it.
+// core that runs it (emulator/build.sh), and `bios` a BIOS set loaded next to it. `turns` games
+// take turns on player 1's controls.
 [
     (rom: "mk2", core: "midway", title: "Mortal Kombat II"),
     (rom: "mslug", core: "neogeo", title: "Metal Slug", bios: Some("neogeo")),
@@ -8,7 +9,7 @@
     (rom: "mvscu", core: "capcom", title: "Marvel vs. Capcom"),
     (rom: "ssriders", core: "konami", title: "Sunset Riders"),
     (rom: "sf2ce", core: "capcom", title: "Street Fighter II' Champion Edition"),
-    (rom: "pacman", core: "classics", title: "Pac-Man"),
+    (rom: "pacman", core: "classics", title: "Pac-Man", turns: true),
     (rom: "atetris", core: "classics", title: "Tetris"),
-    (rom: "wboy", core: "classics", title: "Wonder Boy"),
+    (rom: "wboy", core: "classics", title: "Wonder Boy", turns: true),
 ]

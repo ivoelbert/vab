@@ -21,10 +21,11 @@
   <body>
     <canvas id="bevy"></canvas>
     <script type="module">
-      // wasm-bindgen output of the `client` crate (make client): the bar, the player and the
-      // cabinets. Bevy starts and stops games through the functions below
-      // (client/src/emulator.rs).
-      import init, { push_frame } from "./pkg/client.js";
+      // wasm-bindgen output of the `client` crate (make client): the bar, the players and the
+      // cabinets. Bevy reports where the player walks and starts and stops games through the
+      // window functions below; the page tells it about the room and the game.
+      import init, { cabinet_seats, game_status, player_left, player_moved, players_reset, push_frame } from "./pkg/client.js";
+      import { Room } from "./room.js";
 
       // Browsers only allow sound after a user gesture: it starts on the first key or click.
       const audio = new AudioContext({ sampleRate: 48000 });
@@ -35,29 +36,129 @@
         addEventListener(event, () => audio.resume(), { capture: true, once: true });
       }
 
-      // One emulator worker per game (web/emulator/worker.js). Cores, ROM sets, BIOS sets and
-      // start-up states (emulator/snapshot.mjs) are served from R2.
-      let worker;
-      window.emulatorPlay = (core, rom, bios) => {
-        worker?.terminate();
-        worker = new Worker("./emulator/worker.js", { type: "module" });
-        worker.onmessage = ({ data }) => push_frame(data.rgba, data.width, data.height);
-        const { port1, port2 } = new MessageChannel();
-        speaker.port.postMessage(port1, [port1]);
-        worker.postMessage({ type: "audio", port: port2 }, [port2]);
-        worker.postMessage({
-          type: "start",
-          core: `/fbneo/${core}/fbneo.mjs`,
-          rom: `/roms/${rom}.zip`,
-          files: bios ? [`/roms/${bios}.zip`] : [],
-          state: `/roms/${rom}.state`,
-        });
+      // The bar room this page is in (server/src/lib.rs): ?room=<name> for a private one.
+      let room;
+      let firstMove;
+      window.roomMove = (x, y, flip) => (room ? room.move(x, y, flip) : (firstMove = [x, y, flip]));
+
+      /** The game at the cabinet this player sits at: alone, or online with the other seat. */
+      class Play {
+        seat;
+        partner = null;
+        #game;
+        #worker;
+        #link;
+        #mask = 0;
+        #status = "";
+
+        constructor(game) {
+          this.#game = game;
+          this.cabinet = game.cabinet;
+        }
+
+        /** Who sits at our cabinet changed: start, go online, or carry on alone. */
+        seated(players) {
+          const seat = players.indexOf(room.id);
+          if (seat < 0) return; // not seated (yet)
+          const partner = players[1 - seat];
+          if (this.#worker && seat === this.seat && partner === this.partner) return;
+          if (this.#worker && seat === this.seat && partner === null) {
+            // The other player left: the game goes on, for us alone.
+            this.#worker.postMessage({ type: "solo" });
+            this.#unlink();
+            this.partner = null;
+            this.#show(`Player ${2 - seat} left, you play on. Anyone who sits here now starts a new game with you.`);
+            return;
+          }
+          this.#start(seat, partner);
+        }
+
+        input(mask) {
+          this.#mask = mask;
+          this.#worker?.postMessage({ type: "input", mask });
+        }
+
+        stop() {
+          this.#worker?.terminate();
+          this.#unlink();
+        }
+
+        // Both players start the game from the same state at once, so a new partner means a
+        // new game.
+        #start(seat, partner) {
+          this.stop();
+          this.seat = seat;
+          this.partner = partner;
+          const worker = (this.#worker = new Worker("./emulator/worker.js", { type: "module" }));
+          worker.onmessage = ({ data }) =>
+            data.type === "frame" ? push_frame(data.rgba, data.width, data.height) : this.#netplay(data);
+          const sound = new MessageChannel();
+          speaker.port.postMessage(sound.port1, [sound.port1]);
+          worker.postMessage({ type: "audio", port: sound.port2 }, [sound.port2]);
+
+          // Cores, ROM sets, BIOS sets and start-up states (emulator/snapshot.mjs) come from R2.
+          const { core, rom, bios, turns } = this.#game;
+          const start = {
+            type: "start",
+            core: `/fbneo/${core}/fbneo.mjs`,
+            rom: `/roms/${rom}.zip`,
+            files: bios ? [`/roms/${bios}.zip`] : [],
+            state: `/roms/${rom}.state`,
+            seat,
+            turns,
+          };
+          if (partner === null) {
+            this.#show(`Player ${seat + 1}. Anyone who sits at this cabinet plays with you.`);
+            worker.postMessage(start);
+          } else {
+            const packets = new MessageChannel();
+            const players = seat === 0 ? [room.id, partner] : [partner, room.id];
+            const link = (this.#link = room.link(partner, seat, `${this.cabinet}/${players.join("/")}`));
+            link.onpacket = (packet) => packets.port1.postMessage(packet, [packet]);
+            packets.port1.onmessage = ({ data }) => link.send(data);
+            this.#show(`Player ${seat + 1}. Connecting to player ${2 - seat}...`);
+            worker.postMessage({ ...start, netplay: { port: packets.port2 } }, [packets.port2]);
+          }
+          worker.postMessage({ type: "input", mask: this.#mask });
+        }
+
+        #netplay({ event, ping, frame }) {
+          const me = `Player ${this.seat + 1}`;
+          const other = `player ${2 - this.seat}`;
+          if (event === "synchronized") this.#show(`${me}, online with ${other}`);
+          if (event === "interrupted") this.#show(`${me}. Waiting for ${other}'s connection...`);
+          if (event === "disconnected") this.#show(`${me}. Lost the connection to ${other}.`);
+          if (event === "desync") this.#show(`${me}. Out of step with ${other} since frame ${frame}.`);
+          if (event === "stats" && !this.#status.includes("Out of step")) {
+            const path = this.#link?.direct ? "direct" : "through the server";
+            this.#show(`${me}, online with ${other}, ${ping ?? "?"} ms, ${path}`);
+          }
+        }
+
+        #unlink() {
+          if (this.#link) room.unlink(this.#link);
+          this.#link = undefined;
+        }
+
+        #show(text) {
+          this.#status = text;
+          game_status(text);
+        }
+      }
+
+      let play;
+      window.emulatorPlay = (core, rom, bios, cabinet, turns) => {
+        play?.stop();
+        play = new Play({ core, rom, bios, turns, cabinet });
+        game_status("Taking a seat...");
+        room.sit(cabinet);
       };
       window.emulatorStop = () => {
-        worker?.terminate();
-        worker = undefined;
+        play?.stop();
+        play = undefined;
+        room.stand();
       };
-      window.emulatorInput = (mask) => worker?.postMessage({ type: "input", port: 0, mask });
+      window.emulatorInput = (mask) => play?.input(mask);
 
       await init().catch((error) => {
         // winit ends its web event loop by throwing this on purpose.
@@ -65,6 +166,22 @@
           throw error;
         }
       });
+
+      const name = new URLSearchParams(location.search).get("room") ?? "main";
+      const scheme = location.protocol === "https:" ? "wss" : "ws";
+      room = new Room(`${scheme}://${location.host}/ws/${encodeURIComponent(name)}`, {
+        welcome: players_reset,
+        moved: player_moved,
+        left: player_left,
+        seats(cabinet, players) {
+          cabinet_seats(cabinet, players.filter((id) => id !== null).length);
+          if (play?.cabinet === cabinet) play.seated(players);
+        },
+        full(cabinet) {
+          if (play?.cabinet === cabinet) game_status("Both seats are taken. Esc to go back.");
+        },
+      });
+      if (firstMove) room.move(...firstMove);
       document.getElementById("bevy").focus();
     </script>
   </body>

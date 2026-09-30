@@ -1,0 +1,15 @@
+[package]
+name = "netplay"
+version = "0.1.0"
+edition = "2024"
+
+# Rollback netplay for the emulator worker (web/emulator/worker.js), built to web/netplay/.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ggrs = { version = "0.13", features = ["wasm-bindgen"] }
+# GGRS's own wire format for its messages.
+bincode = "1.3"
+js-sys = "0.3"
+wasm-bindgen = "0.2"
