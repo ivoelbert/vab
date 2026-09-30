@@ -19,7 +19,8 @@
 //      { type: "solo" } Everyone else left: play on alone.
 //      { type: "input", mask } | { type: "audio", port }
 // Out: { type: "frame", rgba, width, height } | { type: "netplay", event, seat, ... } |
-//      { type: "captured", epoch, state }
+//      { type: "captured", epoch, state } | { type: "buttons", buttons } what the game calls
+//      player 1's buttons, [RetroPad id, name] pairs, once known
 import { Core } from "./libretro.js";
 
 // RetroPad bits (libretro.h).
@@ -107,6 +108,7 @@ class Cabinet {
   #captured;
   #next = performance.now();
   #nextStats = 0;
+  #buttonsSent = false;
 
   constructor(core, { seat, turns, port }) {
     this.core = core;
@@ -203,6 +205,11 @@ class Cabinet {
     }
     this.core.present = present;
     this.core.run();
+    // The core names the game's buttons on its first frame.
+    if (!this.#buttonsSent && this.core.buttons.size) {
+      this.#buttonsSent = true;
+      postMessage({ type: "buttons", buttons: [...this.core.buttons] });
+    }
   }
 
   #capture(epoch) {

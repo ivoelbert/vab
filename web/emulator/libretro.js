@@ -7,6 +7,7 @@ const ENV = {
   GET_CAN_DUPE: 3,
   GET_SYSTEM_DIRECTORY: 9,
   SET_PIXEL_FORMAT: 10,
+  SET_INPUT_DESCRIPTORS: 11,
   GET_VARIABLE: 15,
   GET_VARIABLE_UPDATE: 17,
   GET_LOG_INTERFACE: 27,
@@ -40,6 +41,12 @@ export class Core {
    * itself (it still emulates it, so the machine stays exact).
    */
   present = true;
+
+  /**
+   * What the game calls player 1's RetroPad buttons, from the core: RetroPad id -> name, e.g.
+   * 0 -> "Fire" (B). Known once the game is loaded.
+   */
+  buttons = new Map();
 
   #m;
   #slots = [];
@@ -194,6 +201,18 @@ export class Core {
       case ENV.GET_SAVE_DIRECTORY:
         m.setValue(data, this.#cString("/save"), "i32");
         return 1;
+      case ENV.SET_INPUT_DESCRIPTORS: {
+        // struct retro_input_descriptor { unsigned port, device, index, id; const char *description; }[],
+        // ended by one without a description.
+        this.buttons.clear();
+        for (let at = data; ; at += 20) {
+          const description = m.getValue(at + 16, "i32");
+          if (!description) break;
+          const [port, device, index, id] = [0, 4, 8, 12].map((offset) => m.getValue(at + offset, "i32"));
+          if (port === 0 && device === DEVICE_JOYPAD && index === 0) this.buttons.set(id, m.UTF8ToString(description));
+        }
+        return 1;
+      }
       case ENV.SET_PIXEL_FORMAT: {
         const format = m.getValue(data, "i32");
         if (!Object.values(PIXEL_FORMAT).includes(format)) return 0;

@@ -11,6 +11,7 @@ use world::{Game, Map, cell_to_world, games_from_ron, world_to_cell};
 use crate::Mode;
 use crate::chat::chat_closed;
 use crate::emulator;
+use crate::help::help_closed;
 use crate::player::Player;
 
 /// The games cabinets can run, built into the client like the map.
@@ -36,7 +37,8 @@ impl Plugin for CabinetsPlugin {
         app.add_systems(Startup, spawn_hint)
             .add_systems(
                 Update,
-                (show_hint, play.run_if(chat_closed)).run_if(in_state(Mode::Walking)),
+                (show_hint, play.run_if(chat_closed).run_if(help_closed))
+                    .run_if(in_state(Mode::Walking)),
             )
             .add_systems(OnEnter(Mode::Playing), hide_hint);
     }
@@ -139,6 +141,7 @@ fn show_hint(
 }
 
 fn play(
+    mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     cabinets: Res<Cabinets>,
     player: Single<&Player>,
@@ -149,6 +152,8 @@ fn play(
     }
     if let Some((cell, game)) = cabinets.next_to(player.feet) {
         emulator::play(*cell, game);
+        let title = game.title.clone();
+        commands.insert_resource(emulator::PlayingGame { title });
         mode.set(Mode::Playing);
     }
 }

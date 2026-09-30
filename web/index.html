@@ -27,7 +27,9 @@
       import init, {
         cabinet_seats,
         chat_said,
+        game_buttons,
         game_status,
+        help_welcome,
         own_name,
         player_left,
         player_moved,
@@ -53,13 +55,17 @@
       window.roomMove = (x, y, flip) => (room ? room.move(x, y, flip) : (firstMove = [x, y, flip]));
       window.roomSay = (text) => room?.say(text) ?? false;
 
-      // The name set with /name in the chat (client/src/chat.rs), remembered for a year.
-      const savedName = () => {
-        const cookie = document.cookie.split("; ").find((part) => part.startsWith("name="));
-        return cookie && decodeURIComponent(cookie.slice("name=".length));
+      // Cookies remember things for a year: the name set with /name in the chat
+      // (client/src/chat.rs), and that the controls were shown (client/src/help.rs).
+      const cookie = (key) => {
+        const found = document.cookie.split("; ").find((part) => part.startsWith(`${key}=`));
+        return found && decodeURIComponent(found.slice(key.length + 1));
+      };
+      const remember = (key, value) => {
+        document.cookie = `${key}=${encodeURIComponent(value)}; max-age=${365 * 24 * 3600}; path=/; samesite=lax`;
       };
       window.roomName = (name) => {
-        document.cookie = `name=${encodeURIComponent(name)}; max-age=${365 * 24 * 3600}; path=/; samesite=lax`;
+        remember("name", name);
         room?.setName(name);
         own_name(name);
       };
@@ -140,6 +146,7 @@
           const worker = (this.#worker = new Worker("./emulator/worker.js", { type: "module" }));
           worker.onmessage = ({ data }) => {
             if (data.type === "frame") push_frame(data.rgba, data.width, data.height);
+            if (data.type === "buttons") game_buttons(data.buttons.map(([id, name]) => `${id}\t${name}`).join("\n"));
             if (data.type === "captured") this.#captured(data);
             if (data.type === "netplay") this.#netplay(data);
           };
@@ -320,7 +327,12 @@
         },
         message: (from, data) => play?.message(from, data),
         handover: (from, epoch, bytes) => play?.handover(from, epoch, bytes),
-      }, savedName());
+      }, cookie("name"));
+      // First visit: the controls.
+      if (!cookie("welcomed")) {
+        help_welcome();
+        remember("welcomed", "1");
+      }
       if (firstMove) room.move(...firstMove);
       roomReady();
       document.getElementById("bevy").focus();

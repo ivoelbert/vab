@@ -1,6 +1,7 @@
 mod cabinets;
 mod chat;
 mod emulator;
+mod help;
 mod player;
 mod room;
 
@@ -10,6 +11,7 @@ use bevy::prelude::*;
 use cabinets::{Cabinets, CabinetsPlugin};
 use chat::ChatPlugin;
 use emulator::EmulatorPlugin;
+use help::HelpPlugin;
 use player::{PlayerPlugin, Walkable, spawn_player};
 use room::RoomPlugin;
 use world::{Map, map_sprite};
@@ -47,6 +49,7 @@ fn main() {
         CabinetsPlugin,
         ChatPlugin,
         EmulatorPlugin,
+        HelpPlugin,
         RoomPlugin,
     ))
     .init_state::<Mode>()

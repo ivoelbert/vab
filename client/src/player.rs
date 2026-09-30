@@ -9,6 +9,7 @@ use world::{Map, TILE_HEIGHT, cell_to_world, world_to_cell};
 
 use crate::Mode;
 use crate::chat::chat_closed;
+use crate::help::help_closed;
 use crate::room;
 
 /// Walking speed in world pixels per second.
@@ -23,7 +24,11 @@ impl Plugin for PlayerPlugin {
         app.add_systems(
             Update,
             (
-                walk.run_if(in_state(Mode::Walking).and_then(chat_closed)),
+                walk.run_if(
+                    in_state(Mode::Walking)
+                        .and_then(chat_closed)
+                        .and_then(help_closed),
+                ),
                 follow,
             )
                 .chain(),
