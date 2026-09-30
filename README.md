@@ -5,7 +5,9 @@ player: arrows or WASD walk, and floor tiles without an object are walkable. Eve
 is in the same bar room and sees the others walk around (`?room=<name>` opens a separate one).
 E next to a cabinet sits you at it: you start its game, or join the one being played there
 (see [Online play](#online-play)). Esc stands up. Y opens the chat for everyone in the room;
-`/name <name>` there sets the name shown above your head, and a cookie keeps it.
+`/name <name>` there sets the name shown above your head, and a cookie keeps it. The controls
+show on a first visit and with `/help`; when a game starts, a card lists its buttons as the game
+names them (the core reports them, e.g. "Z  Low Punch").
 
 | Path | What | Built with |
 | --- | --- | --- |

@@ -11,6 +11,8 @@ use bevy::input::{ButtonState, InputSystems};
 use bevy::prelude::*;
 use wasm_bindgen::prelude::*;
 
+use crate::help::{Help, ShowHelp};
+
 /// Lines kept and shown.
 const LINES: usize = 8;
 /// How long a line stays up when not typing, in seconds.
@@ -77,8 +79,8 @@ impl Chat {
         }
     }
 
-    /// Sends what was typed: a message, or a command.
-    fn send(&mut self, now: f32) {
+    /// Sends what was typed: a message, or a command. True for /help.
+    fn send(&mut self, now: f32) -> bool {
         let typed = std::mem::take(&mut self.typing);
         let line = typed.trim();
         let command = line
@@ -95,6 +97,7 @@ impl Chat {
                 }
             }
             None => {}
+            Some("/help") => return true,
             Some("/name") => {
                 let name = line["/name".len()..]
                     .split_whitespace()
@@ -108,17 +111,28 @@ impl Chat {
                     self.add(format!("* You're {name} now."), now);
                 }
             }
-            Some(_) => self.add("* The only command is /name, e.g. /name Mauri".into(), now),
+            Some(_) => self.add(
+                "* Commands: /name Mauri sets your name, /help shows the controls".into(),
+                now,
+            ),
         }
+        false
     }
 }
 
-fn type_in_chat(
+pub fn type_in_chat(
     mut keyboard: MessageReader<KeyboardInput>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
     mut chat: ResMut<Chat>,
+    mut help: MessageWriter<ShowHelp>,
+    help_panel: Res<Help>,
     time: Res<Time>,
 ) {
+    // Keys close the controls panel first (help.rs).
+    if help_panel.is_open() {
+        keyboard.clear();
+        return;
+    }
     for key in keyboard.read() {
         if key.state != ButtonState::Pressed {
             continue;
@@ -129,7 +143,9 @@ fn type_in_chat(
         }
         match key.key_code {
             KeyCode::Enter | KeyCode::NumpadEnter => {
-                chat.send(time.elapsed_secs());
+                if chat.send(time.elapsed_secs()) {
+                    help.write(ShowHelp);
+                }
                 chat.open = false;
             }
             KeyCode::Escape => {
@@ -240,9 +256,12 @@ fn show_chat(
     };
 
     let (typed, typed_color) = if !chat.open {
-        ("Y  chat".to_string(), 0.5)
+        ("Y  chat, /help for the controls".to_string(), 0.5)
     } else if chat.typing.is_empty() {
-        ("> Say something, or /name <your name>".to_string(), 0.6)
+        (
+            "> Say something, /name <your name> or /help".to_string(),
+            0.6,
+        )
     } else {
         (format!("> {}_", chat.typing), 1.0)
     };

@@ -17,7 +17,7 @@ use crate::chat::{Chat, chat_closed};
 
 /// Keys and the RetroPad button ids (libretro.h) they press. FBNeo maps MK's panel to
 /// A S D = high punch, high kick, block and Z X C = low punch, low kick, block.
-const KEYS: [(KeyCode, u16); 12] = [
+pub const KEYS: [(KeyCode, u16); 12] = [
     (KeyCode::ArrowUp, 4),
     (KeyCode::ArrowDown, 5),
     (KeyCode::ArrowLeft, 6),
@@ -67,6 +67,12 @@ extern "C" {
     /// Sends the player's RetroPad mask to the worker, for their seat's controller.
     #[wasm_bindgen(js_name = emulatorInput)]
     fn emulator_input(mask: u16);
+}
+
+/// The game being played, while `Mode::Playing`.
+#[derive(Resource)]
+pub struct PlayingGame {
+    pub title: String,
 }
 
 /// Starts the game at the cabinet in `cell`; switch to `Mode::Playing` to show it.
