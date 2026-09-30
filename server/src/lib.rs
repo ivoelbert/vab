@@ -111,6 +111,8 @@ fn not_found() -> Result<Response> {
 /// what the room knows about each player lives on their socket (its attachment), and each
 /// socket is tagged with its player's id.
 ///
+/// Players have a name, shown above their head and next to what they say in the chat.
+///
 /// Text messages are JSON (`FromPlayer`, `ToPlayer`). Binary messages are for another player,
 /// passed on as they are but for the address: `[to: u32 LE][bytes]` in, `[from: u32 LE][bytes]`
 /// out. The page sends game packets this way until WebRTC connects, and hands games over.
@@ -123,6 +125,8 @@ pub struct Room {
 #[derive(Serialize, Deserialize, Clone)]
 struct Player {
     id: u32,
+    #[serde(default)]
+    name: String,
     /// Where their feet are, once they've said.
     at: Option<Position>,
     /// Where they're playing.
@@ -157,6 +161,14 @@ enum FromPlayer {
         seats: Option<usize>,
     },
     Stand,
+    /// Change the player's name (it's trimmed to 20 characters).
+    Name {
+        name: String,
+    },
+    /// Say something to everyone in the room (up to 200 characters).
+    Say {
+        text: String,
+    },
     /// Messages between the players at a cabinet (WebRTC offers, answers and ICE candidates,
     /// handing a game over), passed on as they are.
     Signal {
@@ -168,14 +180,21 @@ enum FromPlayer {
 #[derive(Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 enum ToPlayer<'a> {
-    /// First message: the player's id, and everyone else.
+    /// First message: the player's id and name, and everyone else.
     Welcome {
         id: u32,
+        name: &'a str,
         players: Vec<PlayerAt>,
         seats: BTreeMap<String, Vec<Option<u32>>>,
     },
-    /// Also how a newcomer first shows up.
+    /// Also how a newcomer first shows up, and how a new name spreads.
     Moved(PlayerAt),
+    /// A chat message.
+    Said {
+        id: u32,
+        name: &'a str,
+        text: &'a str,
+    },
     Left {
         id: u32,
     },
@@ -197,8 +216,26 @@ enum ToPlayer<'a> {
 #[derive(Serialize)]
 struct PlayerAt {
     id: u32,
+    name: String,
     #[serde(flatten)]
     at: Position,
+}
+
+/// Text as players may send it: one line without control characters or runs of spaces, at most
+/// `max` characters. None when nothing is left.
+fn clean(text: &str, max: usize) -> Option<String> {
+    let words: Vec<&str> = text
+        .split(|c: char| c.is_whitespace() || c.is_control())
+        .collect();
+    let line: String = words
+        .iter()
+        .filter(|word| !word.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let line: String = line.chars().take(max).collect();
+    let line = line.trim_end();
+    (!line.is_empty()).then(|| line.to_string())
 }
 
 impl Room {
@@ -317,6 +354,7 @@ impl DurableObject for Room {
         self.state.accept_websocket_with_tags(&pair.server, &[&tag]);
         let player = Player {
             id,
+            name: format!("Guest {:04}", id % 10000),
             at: None,
             seat: None,
         };
@@ -335,12 +373,17 @@ impl DurableObject for Room {
             .filter_map(|(_, other)| {
                 Some(PlayerAt {
                     id: other.id,
+                    name: other.name.clone(),
                     at: other.at?,
                 })
             })
             .collect();
-        pair.server
-            .send(&ToPlayer::Welcome { id, players, seats })?;
+        pair.server.send(&ToPlayer::Welcome {
+            id,
+            name: &player.name,
+            players,
+            seats,
+        })?;
         Response::from_websocket(pair.client)
     }
 
@@ -372,7 +415,37 @@ impl DurableObject for Room {
             FromPlayer::Move(at) => {
                 player.at = Some(at);
                 ws.serialize_attachment(&player)?;
-                self.broadcast(&ToPlayer::Moved(PlayerAt { id: player.id, at }))?;
+                let name = player.name;
+                self.broadcast(&ToPlayer::Moved(PlayerAt {
+                    id: player.id,
+                    name,
+                    at,
+                }))?;
+            }
+            FromPlayer::Name { name } => {
+                let Some(name) = clean(&name, 20) else {
+                    return Ok(());
+                };
+                player.name = name.clone();
+                ws.serialize_attachment(&player)?;
+                // Others see it once the player is somewhere.
+                if let Some(at) = player.at {
+                    self.broadcast(&ToPlayer::Moved(PlayerAt {
+                        id: player.id,
+                        name,
+                        at,
+                    }))?;
+                }
+            }
+            FromPlayer::Say { text } => {
+                if let Some(text) = clean(&text, 200) {
+                    let name = &player.name;
+                    self.broadcast(&ToPlayer::Said {
+                        id: player.id,
+                        name,
+                        text: &text,
+                    })?;
+                }
             }
             FromPlayer::Sit { cabinet, seats } => {
                 let of = seats.unwrap_or(2).clamp(1, 4);

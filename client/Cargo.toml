@@ -15,7 +15,7 @@ bevy = { version = "0.19.1", default-features = false, features = [
   # 2D rendering: sprites, PNG art, text, UI
   "bevy_render", "bevy_core_pipeline", "bevy_camera", "bevy_color", "bevy_image", "png",
   "bevy_mesh", "bevy_shader", "bevy_material", "bevy_sprite", "bevy_sprite_render",
-  "bevy_text", "default_font", "bevy_ui", "bevy_ui_render",
+  "bevy_text", "bevy_ui", "bevy_ui_render",
 ] }
 # Compile out log calls below `warn` in release builds (see bevy_log's LogPlugin docs).
 log = { version = "0.4", features = ["max_level_debug", "release_max_level_warn"] }

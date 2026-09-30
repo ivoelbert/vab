@@ -13,6 +13,7 @@ use wasm_bindgen::prelude::*;
 use world::Game;
 
 use crate::Mode;
+use crate::chat::{Chat, chat_closed};
 
 /// Keys and the RetroPad button ids (libretro.h) they press. FBNeo maps MK's panel to
 /// A S D = high punch, high kick, block and Z X C = low punch, low kick, block.
@@ -96,7 +97,13 @@ impl Plugin for EmulatorPlugin {
         app.add_systems(OnEnter(Mode::Playing), show_screen)
             .add_systems(
                 Update,
-                (show_latest_frame, show_status, send_input, leave).run_if(in_state(Mode::Playing)),
+                (
+                    show_latest_frame,
+                    show_status,
+                    send_input,
+                    leave.run_if(chat_closed),
+                )
+                    .run_if(in_state(Mode::Playing)),
             )
             .add_systems(OnExit(Mode::Playing), stop);
     }
@@ -206,10 +213,11 @@ fn show_status(mut status: Single<&mut Text, With<Status>>) {
     }
 }
 
-fn send_input(keys: Res<ButtonInput<KeyCode>>, mut sent: Local<u16>) {
+fn send_input(keys: Res<ButtonInput<KeyCode>>, chat: Res<Chat>, mut sent: Local<u16>) {
+    // While typing in the chat, the player's hands are off the controls.
     let mask = KEYS
         .iter()
-        .filter(|(key, _)| keys.pressed(*key))
+        .filter(|(key, _)| !chat.is_open() && keys.pressed(*key))
         .fold(0, |mask, (_, id)| mask | 1 << id);
     if mask != *sent {
         emulator_input(mask);

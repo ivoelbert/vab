@@ -35,20 +35,34 @@ export class Room {
   #positionSent = 0;
   #positionTimer;
   #sitting;
+  #name;
   #links = new Map();
   #waitingSignals = new Map();
   #handovers = new Map();
 
   /**
    * @param url the room's WebSocket, e.g. wss://host/ws/main
-   * @param events welcome(), moved(id, x, y, flip), left(id), seats(cabinet, players),
-   *   full(cabinet), message(from, data) from another player at our cabinet,
-   *   handover(from, epoch, bytes) a game handed over (see handOver)
+   * @param events welcome(name), moved(id, x, y, flip, name), left(id), said(id, name, text),
+   *   seats(cabinet, players), full(cabinet), message(from, data) from another player at our
+   *   cabinet, handover(from, epoch, bytes) a game handed over (see handOver)
+   * @param name this player's name, if they set one before; else the room gives one
    */
-  constructor(url, events) {
+  constructor(url, events, name) {
     this.#url = url;
     this.#events = events;
+    this.#name = name;
     this.#connect(1000);
+  }
+
+  /** The name shown above this player and next to what they say. */
+  setName(name) {
+    this.#name = name;
+    this.#send({ type: "name", name });
+  }
+
+  /** Says something to everyone in the room. False when not connected. */
+  say(text) {
+    return this.#send({ type: "say", text });
   }
 
   /** Where this player stands. Sent at most 10 times a second, always ending on the latest. */
@@ -128,7 +142,9 @@ export class Room {
   }
 
   #send(message) {
-    if (this.#ws?.readyState === WebSocket.OPEN) this.#ws.send(JSON.stringify(message));
+    if (this.#ws?.readyState !== WebSocket.OPEN) return false;
+    this.#ws.send(JSON.stringify(message));
+    return true;
   }
 
   #connect(retryMs) {
@@ -148,15 +164,19 @@ export class Room {
       case "welcome":
         this.id = message.id;
         this.seats = new Map(Object.entries(message.seats));
-        events.welcome();
-        for (const { id, x, y, flip } of message.players) events.moved(id, x, y, flip);
+        if (this.#name) this.#send({ type: "name", name: this.#name });
+        events.welcome(this.#name ?? message.name);
+        for (const { id, x, y, flip, name } of message.players) events.moved(id, x, y, flip, name);
         for (const [cabinet, players] of this.seats) events.seats(cabinet, players);
         // Back again after a lost connection, with a new id: say where we are and sit back down.
         if (this.#position) this.#send(this.#position);
         if (this.#sitting) this.#send(this.#sitting);
         break;
       case "moved":
-        if (message.id !== this.id) events.moved(message.id, message.x, message.y, message.flip);
+        if (message.id !== this.id) events.moved(message.id, message.x, message.y, message.flip, message.name);
+        break;
+      case "said":
+        events.said(message.id, message.name, message.text);
         break;
       case "left":
         events.left(message.id);
