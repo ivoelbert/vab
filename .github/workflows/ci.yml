@@ -3,31 +3,81 @@
 # GGRS module, emulator frontend). Cores, ROMs and start-up states live in R2 and are uploaded
 # by hand (README, Deploy).
 #
+# Jobs run side by side and keep their compiled crates between runs; pull requests start from
+# main's. Pull requests lint (which compiles every crate) and build the Worker; main also builds
+# the site the slow, small way players download it (fat LTO, wasm-opt -Oz), then deploys.
+#
 # Needs the repository secrets CLOUDFLARE_API_TOKEN (a token from the "Edit Cloudflare Workers"
 # template) and CLOUDFLARE_ACCOUNT_ID.
 name: CI
 
 on:
   pull_request:
+    paths-ignore: ["art/**", "tools/art/**", "**.md"]
   push:
     branches: [main]
+    paths-ignore: ["art/**", "tools/art/**", "**.md"]
 
 # Deploys run one at a time, in order; a new push to a pull request replaces its running check.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  build:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Rust, as pinned in rust-toolchain.toml
         run: |
           channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
           rustup toolchain install "$channel" --profile minimal \
             --target wasm32-unknown-unknown --component clippy,rustfmt
+          rustup default "$channel"
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      # The editor (tools/editor) is a desktop app and isn't part of the site.
+      - name: Lint
+        run: cargo clippy -p client -p netplay -p server -p world --target wasm32-unknown-unknown -- -D warnings
+
+  # Pull requests: the Worker compiles (deploy below does this on main).
+  worker:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust, as pinned in rust-toolchain.toml
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --target wasm32-unknown-unknown
+          rustup default "$channel"
+      # Shared with deploy. Also keeps worker-build, which wrangler would otherwise compile.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: worker
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+        working-directory: server
+      - run: npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/worker"
+        working-directory: server
+
+  site:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust, as pinned in rust-toolchain.toml
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --target wasm32-unknown-unknown
           rustup default "$channel"
       - uses: Swatinem/rust-cache@v2
 
@@ -46,15 +96,31 @@ jobs:
             | tar xz -C "$RUNNER_TEMP"
           echo "WASM_OPT=$RUNNER_TEMP/binaryen-version_133/bin/wasm-opt" >> "$GITHUB_ENV"
 
-      - name: Format
-        run: cargo fmt --all --check
-      # The editor (tools/editor) is a desktop app and isn't part of the site.
-      - name: Lint
-        run: cargo clippy -p client -p netplay -p server -p world --target wasm32-unknown-unknown -- -D warnings
-
       - name: Build the site
         run: make client netplay WASM_BINDGEN="$(command -v wasm-bindgen)" WASM_OPT="$WASM_OPT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: |
+            web/pkg
+            web/netplay
+            web/assets
+          retention-days: 7
 
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [lint, site]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust, as pinned in rust-toolchain.toml
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --target wasm32-unknown-unknown
+          rustup default "$channel"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: worker
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -62,14 +128,11 @@ jobs:
           cache-dependency-path: server/package-lock.json
       - run: npm ci
         working-directory: server
-
-      - name: Build the Worker
-        if: github.event_name == 'pull_request'
-        run: npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/worker"
-        working-directory: server
-
+      - uses: actions/download-artifact@v4
+        with:
+          name: site
+          path: web
       - name: Deploy to production
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: npx wrangler deploy
         working-directory: server
         env:
