@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["client", "server", "world", "tools/editor"]
+members = ["client", "netplay", "server", "world", "tools/editor"]
 
 # Profiles follow Bevy's quick-start guide:
 # https://bevy.org/learn/quick-start/getting-started/setup/#compile-with-performance-optimizations

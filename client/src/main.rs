@@ -1,12 +1,14 @@
 mod cabinets;
 mod emulator;
 mod player;
+mod room;
 
 use bevy::asset::AssetMetaCheck;
 use bevy::prelude::*;
 use cabinets::{Cabinets, CabinetsPlugin};
 use emulator::EmulatorPlugin;
 use player::{PlayerPlugin, Walkable, spawn_player};
+use room::RoomPlugin;
 use world::{Map, map_sprite};
 
 /// The bar, made with the editor (`make editor`) and built into the client.
@@ -38,6 +40,7 @@ fn main() {
             PlayerPlugin,
             CabinetsPlugin,
             EmulatorPlugin,
+            RoomPlugin,
         ))
         .init_state::<Mode>()
         .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.08)))

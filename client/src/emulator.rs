@@ -1,6 +1,8 @@
-//! Plays a cabinet's game with the page's emulator worker (web/emulator/worker.js). Frames
-//! come in through `push_frame` and fill the screen, player 1's buttons go out through
-//! `emulatorInput`, and Esc stops the game and returns to the bar.
+//! Plays a cabinet's game with the page's emulator worker (web/emulator/worker.js). The page
+//! sits the player at the cabinet and plays alone or online with whoever takes the other seat.
+//! Frames come in through `push_frame` and fill the screen, a status line (who you play with,
+//! the connection) through `game_status`, the player's buttons go out through `emulatorInput`,
+//! and Esc stops the game and returns to the bar.
 
 use std::cell::RefCell;
 
@@ -31,6 +33,7 @@ const KEYS: [(KeyCode, u16); 12] = [
 
 thread_local! {
     static LATEST_FRAME: RefCell<Option<(UVec2, Vec<u8>)>> = const { RefCell::new(None) };
+    static LATEST_STATUS: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 /// Called by index.html with each RGBA frame the emulator worker posts.
@@ -39,22 +42,51 @@ pub fn push_frame(rgba: Vec<u8>, width: u32, height: u32) {
     LATEST_FRAME.set(Some((UVec2::new(width, height), rgba)));
 }
 
+/// Called by index.html with a line about the game: who you play with, how the connection is.
+#[wasm_bindgen]
+pub fn game_status(text: String) {
+    LATEST_STATUS.set(Some(text));
+}
+
 // Defined in index.html.
 #[wasm_bindgen]
 extern "C" {
+    /// Sits the player at `cabinet` ("x,y") and starts its game, for up to `players` at once.
     #[wasm_bindgen(js_name = emulatorPlay)]
-    fn emulator_play(core: &str, rom: &str, bios: Option<String>);
+    fn emulator_play(
+        core: &str,
+        rom: &str,
+        bios: Option<String>,
+        cabinet: &str,
+        turns: bool,
+        players: u32,
+    );
     #[wasm_bindgen(js_name = emulatorStop)]
     fn emulator_stop();
-    /// Sends player 1's RetroPad mask to the worker.
+    /// Sends the player's RetroPad mask to the worker, for their seat's controller.
     #[wasm_bindgen(js_name = emulatorInput)]
     fn emulator_input(mask: u16);
 }
 
-/// Starts a game; switch to `Mode::Playing` to show it.
-pub fn play(game: &Game) {
+/// Starts the game at the cabinet in `cell`; switch to `Mode::Playing` to show it.
+pub fn play(cell: IVec2, game: &Game) {
     LATEST_FRAME.set(None);
-    emulator_play(&game.core, &game.rom, game.bios.clone());
+    LATEST_STATUS.set(None);
+    let cabinet = cabinet_id(cell);
+    let bios = game.bios.clone();
+    emulator_play(
+        &game.core,
+        &game.rom,
+        bios,
+        &cabinet,
+        game.turns,
+        game.players,
+    );
+}
+
+/// How the page and the room name a cabinet: its cell, "x,y".
+pub fn cabinet_id(cell: IVec2) -> String {
+    format!("{},{}", cell.x, cell.y)
 }
 
 pub struct EmulatorPlugin;
@@ -64,7 +96,7 @@ impl Plugin for EmulatorPlugin {
         app.add_systems(OnEnter(Mode::Playing), show_screen)
             .add_systems(
                 Update,
-                (show_latest_frame, send_input, leave).run_if(in_state(Mode::Playing)),
+                (show_latest_frame, show_status, send_input, leave).run_if(in_state(Mode::Playing)),
             )
             .add_systems(OnExit(Mode::Playing), stop);
     }
@@ -77,6 +109,10 @@ struct Overlay;
 /// The image node that shows the game.
 #[derive(Component)]
 struct Screen;
+
+/// The line above the game about who you play with.
+#[derive(Component)]
+struct Status;
 
 fn show_screen(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     commands.spawn((
@@ -91,16 +127,37 @@ fn show_screen(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         },
         BackgroundColor(Color::BLACK),
         GlobalZIndex(1),
-        children![(
-            Screen,
-            ImageNode::new(images.add(screen_image(4, 3))),
-            Node {
-                height: Val::Percent(100.0),
-                max_width: Val::Percent(100.0),
-                aspect_ratio: Some(4.0 / 3.0),
-                ..default()
-            },
-        )],
+        children![
+            (
+                Screen,
+                ImageNode::new(images.add(screen_image(4, 3))),
+                Node {
+                    height: Val::Percent(100.0),
+                    max_width: Val::Percent(100.0),
+                    aspect_ratio: Some(4.0 / 3.0),
+                    ..default()
+                },
+            ),
+            (
+                Status,
+                Text::new(""),
+                TextFont {
+                    font_size: FontSize::Px(14.0),
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+                Node {
+                    position_type: PositionType::Absolute,
+                    top: Val::Px(8.0),
+                    left: Val::Px(8.0),
+                    padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.75)),
+                // Over the game, which may run under it.
+                ZIndex(1),
+            ),
+        ],
     ));
 }
 
@@ -140,6 +197,12 @@ fn show_latest_frame(
             });
         }
         image.data = Some(rgba.clone());
+    }
+}
+
+fn show_status(mut status: Single<&mut Text, With<Status>>) {
+    if let Some(text) = LATEST_STATUS.take() {
+        status.0 = text;
     }
 }
 

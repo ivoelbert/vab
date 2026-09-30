@@ -8,6 +8,7 @@ use bevy::sprite::Anchor;
 use world::{Map, TILE_HEIGHT, cell_to_world, world_to_cell};
 
 use crate::Mode;
+use crate::room;
 
 /// Walking speed in world pixels per second.
 const SPEED: f32 = 64.0;
@@ -67,6 +68,7 @@ pub fn spawn_player(commands: &mut Commands, asset_server: &AssetServer, walkabl
         return;
     };
     let feet = cell_to_world(cell.x, cell.y);
+    room::room_move(feet.x, feet.y, false);
     commands.spawn((
         Player { feet },
         Sprite::from_image(asset_server.load("characters/player.png")),
@@ -110,12 +112,13 @@ fn walk(
             sprite.flip_x = step.x < 0.0;
         }
         transform.translation = translation(player.feet);
+        room::room_move(player.feet.x, player.feet.y, sprite.flip_x);
     }
 }
 
 /// Snapped to whole pixels, with the same depth rule as map objects (lower on screen draws
 /// on top), nudged ahead of objects on the same row.
-fn translation(feet: Vec2) -> Vec3 {
+pub fn translation(feet: Vec2) -> Vec3 {
     let row = -feet.y / (TILE_HEIGHT / 2.0);
     feet.round().extend(1.0 + row * 0.001 + 0.0005)
 }

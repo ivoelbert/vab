@@ -6,6 +6,7 @@
 
 # Build outputs served as static assets
 /web/pkg
+/web/netplay
 /web/assets
 
 # FBNeo build output (served from R2)
