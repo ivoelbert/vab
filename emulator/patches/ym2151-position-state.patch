@@ -1,0 +1,14 @@
+diff --git a/src/burn/snd/burn_ym2151.cpp b/src/burn/snd/burn_ym2151.cpp
+index 1b5c22a..2b69fe1 100644
+--- a/src/burn/snd/burn_ym2151.cpp
++++ b/src/burn/snd/burn_ym2151.cpp
+@@ -373,6 +373,9 @@ void BurnYM2151Scan(INT32 nAction, INT32 *pnMin)
+ 	}
+ 
+ 	SCAN_VAR(nBurnCurrentYM2151Register);
++	// How far the chip has rendered decides when its internal timers fire, so it's part of the state
++	SCAN_VAR(nYM2151Position);
++	SCAN_VAR(nFractionalPosition);
+ 
+ 	BurnYM2151Scan_int(nAction); // Scan the YM2151's internal registers
+ 
