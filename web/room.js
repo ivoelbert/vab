@@ -60,9 +60,9 @@ export class Room {
     this.#send({ type: "name", name });
   }
 
-  /** Says something to everyone in the room. */
+  /** Says something to everyone in the room. False when not connected. */
   say(text) {
-    this.#send({ type: "say", text });
+    return this.#send({ type: "say", text });
   }
 
   /** Where this player stands. Sent at most 10 times a second, always ending on the latest. */
@@ -142,7 +142,9 @@ export class Room {
   }
 
   #send(message) {
-    if (this.#ws?.readyState === WebSocket.OPEN) this.#ws.send(JSON.stringify(message));
+    if (this.#ws?.readyState !== WebSocket.OPEN) return false;
+    this.#ws.send(JSON.stringify(message));
+    return true;
   }
 
   #connect(retryMs) {

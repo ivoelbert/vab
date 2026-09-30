@@ -51,7 +51,7 @@
       const joined = new Promise((resolve) => (roomReady = resolve));
       let firstMove;
       window.roomMove = (x, y, flip) => (room ? room.move(x, y, flip) : (firstMove = [x, y, flip]));
-      window.roomSay = (text) => room?.say(text);
+      window.roomSay = (text) => room?.say(text) ?? false;
 
       // The name set with /name in the chat (client/src/chat.rs), remembered for a year.
       const savedName = () => {

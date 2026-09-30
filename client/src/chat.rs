@@ -32,8 +32,9 @@ pub fn chat_said(name: String, text: String) {
 // Defined in index.html.
 #[wasm_bindgen]
 extern "C" {
+    /// False when the page isn't connected to the room.
     #[wasm_bindgen(js_name = roomSay)]
-    fn room_say(text: &str);
+    fn room_say(text: &str) -> bool;
     /// Sets the player's name in the room and remembers it for next time.
     #[wasm_bindgen(js_name = roomName)]
     fn room_name(name: &str);
@@ -85,7 +86,14 @@ impl Chat {
             .next()
             .filter(|word| word.starts_with('/'));
         match command {
-            None if !line.is_empty() => room_say(line),
+            None if !line.is_empty() => {
+                if !room_say(line) {
+                    self.add(
+                        "* Not connected to the room, try again in a moment.".into(),
+                        now,
+                    );
+                }
+            }
             None => {}
             Some("/name") => {
                 let name = line["/name".len()..]
