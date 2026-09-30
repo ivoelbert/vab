@@ -1,0 +1,13 @@
+(
+    width: 32,
+    height: 48,
+    layers: [
+        (name: "body", visible: true),
+        (name: "side art", visible: true),
+        (name: "front", visible: true),
+        (name: "controls", visible: true),
+        (name: "screen", visible: true),
+        (name: "marquee", visible: true),
+        (name: "trim", visible: true),
+    ],
+)
