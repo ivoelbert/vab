@@ -24,7 +24,16 @@
       // wasm-bindgen output of the `client` crate (make client): the bar, the players and the
       // cabinets. Bevy reports where the player walks and starts and stops games through the
       // window functions below; the page tells it about the room and the game.
-      import init, { cabinet_seats, game_status, player_left, player_moved, players_reset, push_frame } from "./pkg/client.js";
+      import init, {
+        cabinet_seats,
+        chat_said,
+        game_status,
+        own_name,
+        player_left,
+        player_moved,
+        players_reset,
+        push_frame,
+      } from "./pkg/client.js";
       import { Room } from "./room.js";
 
       // Browsers only allow sound after a user gesture: it starts on the first key or click.
@@ -42,6 +51,18 @@
       const joined = new Promise((resolve) => (roomReady = resolve));
       let firstMove;
       window.roomMove = (x, y, flip) => (room ? room.move(x, y, flip) : (firstMove = [x, y, flip]));
+      window.roomSay = (text) => room?.say(text);
+
+      // The name set with /name in the chat (client/src/chat.rs), remembered for a year.
+      const savedName = () => {
+        const cookie = document.cookie.split("; ").find((part) => part.startsWith("name="));
+        return cookie && decodeURIComponent(cookie.slice("name=".length));
+      };
+      window.roomName = (name) => {
+        document.cookie = `name=${encodeURIComponent(name)}; max-age=${365 * 24 * 3600}; path=/; samesite=lax`;
+        room?.setName(name);
+        own_name(name);
+      };
 
       /**
        * The game at the cabinet this player sits at, alone or online with the others seated
@@ -280,12 +301,16 @@
         }
       });
 
-      const name = new URLSearchParams(location.search).get("room") ?? "main";
+      const bar = new URLSearchParams(location.search).get("room") ?? "main";
       const scheme = location.protocol === "https:" ? "wss" : "ws";
-      room = new Room(`${scheme}://${location.host}/ws/${encodeURIComponent(name)}`, {
-        welcome: players_reset,
+      room = new Room(`${scheme}://${location.host}/ws/${encodeURIComponent(bar)}`, {
+        welcome(name) {
+          players_reset();
+          own_name(name);
+        },
         moved: player_moved,
         left: player_left,
+        said: (id, name, text) => chat_said(name, text),
         seats(cabinet, players) {
           cabinet_seats(cabinet, players.filter((id) => id !== null).length);
           if (play?.cabinet === cabinet) play.seated(players);
@@ -295,7 +320,7 @@
         },
         message: (from, data) => play?.message(from, data),
         handover: (from, epoch, bytes) => play?.handover(from, epoch, bytes),
-      });
+      }, savedName());
       if (firstMove) room.move(...firstMove);
       roomReady();
       document.getElementById("bevy").focus();

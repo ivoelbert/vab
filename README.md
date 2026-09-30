@@ -4,11 +4,12 @@ The page shows the bar from `assets/maps/bar.ron` (made with `make editor`) and 
 player: arrows or WASD walk, and floor tiles without an object are walkable. Everyone on the page
 is in the same bar room and sees the others walk around (`?room=<name>` opens a separate one).
 E next to a cabinet sits you at it: you start its game, or join the one being played there
-(see [Online play](#online-play)). Esc stands up.
+(see [Online play](#online-play)). Esc stands up. Y opens the chat for everyone in the room;
+`/name <name>` there sets the name shown above your head, and a cookie keeps it.
 
 | Path | What | Built with |
 | --- | --- | --- |
-| `client/` | Bevy app, mounted on `<canvas id="bevy">` | `cargo` + `wasm-bindgen` → `web/pkg/` |
+| `client/` | Bevy app, mounted on `<canvas id="bevy">`; its text font (Fira Mono cut to Latin-1, OFL) is in `fonts/` | `cargo` + `wasm-bindgen` → `web/pkg/` |
 | `server/` | Worker + `Room` Durable Object (WebSocket Hibernation) | `workers-rs` template, `wrangler` |
 | `netplay/` | Rollback for two players at a cabinet (GGRS), run by the emulator worker | `cargo` + `wasm-bindgen` → `web/netplay/` |
 | `emulator/` | Per-system FBNeo libretro cores as Emscripten ES modules | emsdk + FBNeo's Makefile → `emulator/dist/<core>/` |

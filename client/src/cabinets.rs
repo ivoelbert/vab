@@ -9,6 +9,7 @@ use wasm_bindgen::prelude::*;
 use world::{Game, Map, cell_to_world, games_from_ron, world_to_cell};
 
 use crate::Mode;
+use crate::chat::chat_closed;
 use crate::emulator;
 use crate::player::Player;
 
@@ -33,7 +34,10 @@ pub struct CabinetsPlugin;
 impl Plugin for CabinetsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, spawn_hint)
-            .add_systems(Update, (show_hint, play).run_if(in_state(Mode::Walking)))
+            .add_systems(
+                Update,
+                (show_hint, play.run_if(chat_closed)).run_if(in_state(Mode::Walking)),
+            )
             .add_systems(OnEnter(Mode::Playing), hide_hint);
     }
 }
