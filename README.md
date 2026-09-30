@@ -3,8 +3,8 @@
 The page shows the bar from `assets/maps/bar.ron` (made with `make editor`) and a placeholder
 player: arrows or WASD walk, and floor tiles without an object are walkable. Everyone on the page
 is in the same bar room and sees the others walk around (`?room=<name>` opens a separate one).
-E next to a cabinet sits you at it and starts its game: alone at first, and online with whoever
-sits at the other seat (see [Online play](#online-play)). Esc stands up.
+E next to a cabinet sits you at it: you start its game, or join the one being played there
+(see [Online play](#online-play)). Esc stands up.
 
 | Path | What | Built with |
 | --- | --- | --- |
@@ -99,23 +99,25 @@ node emulator/rollback-check.mjs emulator/dist/midway/fbneo.mjs $HOME/Downloads/
 
 ## Online play
 
-The first player to sit at a cabinet gets seat 1 (player 1's controls), the second seat 2. Both
-restart the game from its start-up state and run it in step with GGRS (`netplay/`) in their
-emulator workers: each machine guesses the other player's input and re-runs frames when the real
-one arrives. The worker picks the rollback limit from how fast the machine runs the game (Mortal
-Kombat II gets 3 frames and 3 frames of input delay on an M-series Mac, the rest 8 and 2). GGRS
-compares a hash of the game's RAM every 60 frames and reports any desync.
+Players take a cabinet's free seats in order: as many as its game takes (`players` in
+`assets/games.ron`, 2 unless said, up to 4 as in Sunset Riders), each on their seat's controls.
+The first plays alone right away. Whoever sits down later joins that game as it is: the lowest
+seat among those playing captures its machine and hands it to everyone through the room, and all
+of them start a new GGRS session (`netplay/`) from it. Someone leaving works the same way. Each
+machine guesses the others' input and re-runs frames when the real one arrives; the worker picks
+the rollback limit from how fast the machine runs the game (Mortal Kombat II gets 3 frames and 3
+frames of input delay on an M-series Mac, the rest 8 and 2). GGRS compares a hash of the game's
+RAM every 60 frames and reports any desync.
 
-Packets go through the room's WebSocket at first and straight between the browsers over WebRTC
-once that connects (`web/room.js`). When one player leaves, the other plays on alone. Turn-based
-games (`turns` in `assets/games.ron`) use player 1's controls for both players, like an upright
-cabinet.
+Game packets go through the room's WebSocket at first and straight between the browsers over
+WebRTC once that connects (`web/room.js`). Turn-based games (`turns`) use player 1's controls for
+both players, like an upright cabinet.
 
-`emulator/netplay-check.mjs` plays a game between two workers in Node over a simulated network
-(needs `make netplay`):
+`emulator/netplay-check.mjs` plays a game between workers in Node over a simulated network:
+player 1 alone, the others dropping in one by one, then player 2 leaving (needs `make netplay`):
 
 ```sh
-node emulator/netplay-check.mjs emulator/dist/konami/fbneo.mjs $HOME/Downloads/ssriders.zip emulator/dist/ssriders.state
+PLAYERS=4 node emulator/netplay-check.mjs emulator/dist/konami/fbneo.mjs $HOME/Downloads/ssriders.zip emulator/dist/ssriders.state
 ```
 
 ## Sizes

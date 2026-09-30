@@ -51,9 +51,16 @@ pub fn game_status(text: String) {
 // Defined in index.html.
 #[wasm_bindgen]
 extern "C" {
-    /// Sits the player at `cabinet` ("x,y") and starts its game.
+    /// Sits the player at `cabinet` ("x,y") and starts its game, for up to `players` at once.
     #[wasm_bindgen(js_name = emulatorPlay)]
-    fn emulator_play(core: &str, rom: &str, bios: Option<String>, cabinet: &str, turns: bool);
+    fn emulator_play(
+        core: &str,
+        rom: &str,
+        bios: Option<String>,
+        cabinet: &str,
+        turns: bool,
+        players: u32,
+    );
     #[wasm_bindgen(js_name = emulatorStop)]
     fn emulator_stop();
     /// Sends the player's RetroPad mask to the worker, for their seat's controller.
@@ -66,12 +73,14 @@ pub fn play(cell: IVec2, game: &Game) {
     LATEST_FRAME.set(None);
     LATEST_STATUS.set(None);
     let cabinet = cabinet_id(cell);
+    let bios = game.bios.clone();
     emulator_play(
         &game.core,
         &game.rom,
-        game.bios.clone(),
+        bios,
         &cabinet,
         game.turns,
+        game.players,
     );
 }
 

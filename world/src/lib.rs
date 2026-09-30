@@ -42,6 +42,13 @@ pub struct Game {
     /// cabinet, so online player 2 plays through them too.
     #[serde(default)]
     pub turns: bool,
+    /// How many can play at once, each in their own seat (up to 4).
+    #[serde(default = "two")]
+    pub players: u32,
+}
+
+fn two() -> u32 {
+    2
 }
 
 pub fn games_from_ron(text: &str) -> Result<Vec<Game>, ron::error::SpannedError> {

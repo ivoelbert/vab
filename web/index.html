@@ -41,36 +41,51 @@
       let firstMove;
       window.roomMove = (x, y, flip) => (room ? room.move(x, y, flip) : (firstMove = [x, y, flip]));
 
-      /** The game at the cabinet this player sits at: alone, or online with the other seat. */
+      /**
+       * The game at the cabinet this player sits at, alone or online with the others seated
+       * there. When the players change, the lowest seat among those playing captures the game
+       * and hands it to everyone, and all go on from there together (web/emulator/worker.js).
+       */
       class Play {
         seat;
-        partner = null;
         #game;
         #worker;
-        #link;
+        #packets;
         #mask = 0;
         #status = "";
+        /** Our machine runs the game (not waiting to be handed one). */
+        #playing = false;
+        /** Who plays the game our machine runs, seat -> player id, and its last handover. */
+        #players = new Map();
+        #epoch = 0;
+        /** Seat -> player id as the room has it. */
+        #seated = new Map();
+        #links = new Map();
+        /** A handover for us, its message and its game arriving separately: epoch -> parts. */
+        #handovers = new Map();
+        #settle;
+        #joinTimeout;
 
         constructor(game) {
           this.#game = game;
           this.cabinet = game.cabinet;
         }
 
-        /** Who sits at our cabinet changed: start, go online, or carry on alone. */
+        /** Who sits at our cabinet changed. */
         seated(players) {
+          this.#seated = new Map(players.flatMap((id, seat) => (id === null ? [] : [[seat, id]])));
           const seat = players.indexOf(room.id);
           if (seat < 0) return; // not seated (yet)
-          const partner = players[1 - seat];
-          if (this.#worker && seat === this.seat && partner === this.partner) return;
-          if (this.#worker && seat === this.seat && partner === null) {
-            // The other player left: the game goes on, for us alone.
+          if (!this.#worker) return this.#start(seat);
+          if (!this.#playing && this.#seated.size === 1) {
+            // Everyone left before handing us their game: start it ourselves.
             this.#worker.postMessage({ type: "solo" });
-            this.#unlink();
-            this.partner = null;
-            this.#show(`Player ${2 - seat} left, you play on. Anyone who sits here now starts a new game with you.`);
+            this.#nowPlaying(new Map([[seat, room.id]]));
             return;
           }
-          this.#start(seat, partner);
+          // People often sit down together: wait a moment and hand over once.
+          clearTimeout(this.#settle);
+          this.#settle = setTimeout(() => this.#handOver(), 300);
         }
 
         input(mask) {
@@ -80,24 +95,43 @@
 
         stop() {
           this.#worker?.terminate();
-          this.#unlink();
+          clearTimeout(this.#settle);
+          clearTimeout(this.#joinTimeout);
+          for (const link of this.#links.values()) room.unlink(link);
         }
 
-        // Both players start the game from the same state at once, so a new partner means a
-        // new game.
-        #start(seat, partner) {
-          this.stop();
+        /** Another player at our cabinet handed us a game: its players (and its bytes, below). */
+        message(from, { cabinet, epoch, players }) {
+          if (cabinet !== this.cabinet) return;
+          this.#handovers.set(epoch, { ...this.#handovers.get(epoch), players: new Map(players) });
+          this.#join(epoch);
+        }
+
+        handover(from, epoch, bytes) {
+          this.#handovers.set(epoch, { ...this.#handovers.get(epoch), bytes });
+          this.#join(epoch);
+        }
+
+        #start(seat) {
           this.seat = seat;
-          this.partner = partner;
           const worker = (this.#worker = new Worker("./emulator/worker.js", { type: "module" }));
-          worker.onmessage = ({ data }) =>
-            data.type === "frame" ? push_frame(data.rgba, data.width, data.height) : this.#netplay(data);
+          worker.onmessage = ({ data }) => {
+            if (data.type === "frame") push_frame(data.rgba, data.width, data.height);
+            if (data.type === "captured") this.#captured(data);
+            if (data.type === "netplay") this.#netplay(data);
+          };
           const sound = new MessageChannel();
           speaker.port.postMessage(sound.port1, [sound.port1]);
           worker.postMessage({ type: "audio", port: sound.port2 }, [sound.port2]);
+          // Game packets between our worker and the other players' ([seat, packet]).
+          const packets = (this.#packets = new MessageChannel());
+          packets.port1.onmessage = ({ data: [seat, packet] }) =>
+            this.#links.get(this.#players.get(seat))?.send(packet);
 
           // Cores, ROM sets, BIOS sets and start-up states (emulator/snapshot.mjs) come from R2.
+          // Alone we start the game; otherwise the others hand theirs over.
           const { core, rom, bios, turns } = this.#game;
+          const alone = this.#seated.size === 1;
           const start = {
             type: "start",
             core: `/fbneo/${core}/fbneo.mjs`,
@@ -106,38 +140,114 @@
             state: `/roms/${rom}.state`,
             seat,
             turns,
+            port: packets.port2,
+            hold: !alone,
           };
-          if (partner === null) {
-            this.#show(`Player ${seat + 1}. Anyone who sits at this cabinet plays with you.`);
-            worker.postMessage(start);
-          } else {
-            const packets = new MessageChannel();
-            const players = seat === 0 ? [room.id, partner] : [partner, room.id];
-            const link = (this.#link = room.link(partner, seat, `${this.cabinet}/${players.join("/")}`));
-            link.onpacket = (packet) => packets.port1.postMessage(packet, [packet]);
-            packets.port1.onmessage = ({ data }) => link.send(data);
-            this.#show(`Player ${seat + 1}. Connecting to player ${2 - seat}...`);
-            worker.postMessage({ ...start, netplay: { port: packets.port2 } }, [packets.port2]);
-          }
+          worker.postMessage(start, [packets.port2]);
           worker.postMessage({ type: "input", mask: this.#mask });
-        }
-
-        #netplay({ event, ping, frame }) {
-          const me = `Player ${this.seat + 1}`;
-          const other = `player ${2 - this.seat}`;
-          if (event === "synchronized") this.#show(`${me}, online with ${other}`);
-          if (event === "interrupted") this.#show(`${me}. Waiting for ${other}'s connection...`);
-          if (event === "disconnected") this.#show(`${me}. Lost the connection to ${other}.`);
-          if (event === "desync") this.#show(`${me}. Out of step with ${other} since frame ${frame}.`);
-          if (event === "stats" && !this.#status.includes("Out of step")) {
-            const path = this.#link?.direct ? "direct" : "through the server";
-            this.#show(`${me}, online with ${other}, ${ping ?? "?"} ms, ${path}`);
+          if (alone) {
+            this.#nowPlaying(new Map([[seat, room.id]]));
+          } else {
+            this.#show(`Player ${seat + 1}. Joining the game...`);
+            this.#joinTimeout = setTimeout(
+              () => this.#playing || this.#show("Couldn't join the game. Esc and try again."),
+              20000,
+            );
           }
         }
 
-        #unlink() {
-          if (this.#link) room.unlink(this.#link);
-          this.#link = undefined;
+        /** If we're the lowest seat still playing, hands the game to everyone seated now. */
+        #handOver() {
+          if (!this.#playing) return;
+          const same =
+            this.#seated.size === this.#players.size &&
+            [...this.#seated].every(([seat, id]) => this.#players.get(seat) === id);
+          if (same) return;
+          const stayed = [...this.#players].filter(([seat, id]) => this.#seated.get(seat) === id);
+          if (Math.min(...stayed.map(([seat]) => seat)) !== this.seat) return;
+          if (this.#seated.size === 1) {
+            this.#worker.postMessage({ type: "solo" });
+            this.#nowPlaying(new Map(this.#seated));
+            return;
+          }
+          const joined = [...this.#seated.keys()].filter((seat) => !this.#players.has(seat));
+          this.#show(joined.length ? `Player ${joined[0] + 1} is joining...` : "Someone left, going on without them...");
+          this.#players = new Map(this.#seated);
+          this.#epoch++;
+          this.#worker.postMessage({ type: "capture", epoch: this.#epoch });
+        }
+
+        /** Our worker captured the game: hand it to the others, and go on with them. */
+        #captured({ epoch, state }) {
+          if (epoch !== this.#epoch) return;
+          const players = [...this.#players].sort(([a], [b]) => a - b);
+          for (const [seat, id] of players) {
+            if (id === room.id) continue;
+            room.message(id, { cabinet: this.cabinet, epoch, players });
+            room.handOver(id, epoch, state);
+          }
+          this.#goOnline(epoch);
+        }
+
+        /** Joins a handed-over game once both its message and its bytes are here. */
+        #join(epoch) {
+          const { players, bytes } = this.#handovers.get(epoch);
+          if (!players || !bytes || epoch <= this.#epoch || players.get(this.seat) !== room.id) return;
+          for (const older of this.#handovers.keys()) if (older <= epoch) this.#handovers.delete(older);
+          this.#epoch = epoch;
+          this.#players = players;
+          this.#goOnline(epoch, bytes);
+        }
+
+        #goOnline(epoch, state) {
+          this.#linkPlayers();
+          const seats = [...this.#players.keys()].sort((a, b) => a - b);
+          this.#worker.postMessage({ type: "online", epoch, seats, state }, state ? [state.buffer] : []);
+          this.#playing = true;
+          this.#show(`Player ${this.seat + 1}. Connecting to ${this.#others()}...`);
+        }
+
+        #nowPlaying(players) {
+          this.#playing = true;
+          this.#players = players;
+          this.#linkPlayers();
+          const seats = this.#game.players;
+          this.#show(`Player ${this.seat + 1}.${seats > 1 ? " Anyone who sits at this cabinet joins you." : ""}`);
+        }
+
+        /** A link to each other player: the lower seat offers WebRTC. */
+        #linkPlayers() {
+          const others = new Map([...this.#players].filter(([, id]) => id !== room.id));
+          for (const [id, link] of this.#links) {
+            if ([...others.values()].includes(id)) continue;
+            room.unlink(link);
+            this.#links.delete(id);
+          }
+          for (const [seat, id] of others) {
+            if (this.#links.has(id)) continue;
+            const link = room.link(id, this.seat < seat, `${this.cabinet}/${Math.min(id, room.id)}/${Math.max(id, room.id)}`);
+            link.onpacket = (packet) => {
+              const from = [...this.#players].find(([, player]) => player === id)?.[0];
+              if (from !== undefined) this.#packets.port1.postMessage([from, packet], [packet]);
+            };
+            this.#links.set(id, link);
+          }
+        }
+
+        #others() {
+          const seats = [...this.#players.keys()].filter((seat) => seat !== this.seat).map((seat) => seat + 1);
+          return seats.length === 1 ? `player ${seats[0]}` : `players ${seats.slice(0, -1).join(", ")} and ${seats.at(-1)}`;
+        }
+
+        #netplay({ event, seat, ping, frame }) {
+          const me = `Player ${this.seat + 1}`;
+          if (event === "synchronized" || event === "resumed") this.#show(`${me}, online with ${this.#others()}`);
+          if (event === "interrupted") this.#show(`${me}. Waiting for player ${seat + 1}'s connection...`);
+          if (event === "desync") this.#show(`${me}. Out of step with the others since frame ${frame}.`);
+          if (event === "stats" && !this.#status.includes("Out of step") && !this.#status.includes("Waiting")) {
+            const direct = [...this.#links.values()].every((link) => link.direct);
+            this.#show(`${me}, online with ${this.#others()}, ${ping ?? "?"} ms, ${direct ? "direct" : "through the server"}`);
+          }
         }
 
         #show(text) {
@@ -147,11 +257,11 @@
       }
 
       let play;
-      window.emulatorPlay = (core, rom, bios, cabinet, turns) => {
+      window.emulatorPlay = (core, rom, bios, cabinet, turns, players) => {
         play?.stop();
-        play = new Play({ core, rom, bios, turns, cabinet });
+        play = new Play({ core, rom, bios, turns, players, cabinet });
         game_status("Taking a seat...");
-        room.sit(cabinet);
+        room.sit(cabinet, players);
       };
       window.emulatorStop = () => {
         play?.stop();
@@ -178,8 +288,10 @@
           if (play?.cabinet === cabinet) play.seated(players);
         },
         full(cabinet) {
-          if (play?.cabinet === cabinet) game_status("Both seats are taken. Esc to go back.");
+          if (play?.cabinet === cabinet) game_status("All seats are taken. Esc to go back.");
         },
+        message: (from, data) => play?.message(from, data),
+        handover: (from, epoch, bytes) => play?.handover(from, epoch, bytes),
       });
       if (firstMove) room.move(...firstMove);
       document.getElementById("bevy").focus();

@@ -1,5 +1,5 @@
 // The page's connection to its bar room (the Room Durable Object in server/src/lib.rs): where
-// the other players are, who sits at which cabinet, and a link to the other player at ours.
+// the other players are, who sits at which cabinet, and links to the others at ours.
 
 // WebRTC servers from the Worker (/ice): STUN, and TURN when it is set up. Its credentials last
 // a day; fetched again after 12 hours.
@@ -16,10 +16,16 @@ function getIceServers() {
   return iceServers;
 }
 
+// Binary messages through the room, after its [player id: u32] address: a kind byte, then a
+// game packet, or a piece of a game handed over: [epoch: u32][index: u16][count: u16][bytes].
+const PACKET = 0;
+const HANDOVER = 1;
+const HANDOVER_PIECE = 256 * 1024; // the room takes messages up to 1 MiB
+
 export class Room {
   /** This player's id in the room, from its welcome. */
   id;
-  /** Who sits at each cabinet: cabinet ("x,y") -> [player id or null, player id or null]. */
+  /** Who sits at each cabinet: cabinet ("x,y") -> a player id or null per seat. */
   seats = new Map();
 
   #url;
@@ -28,13 +34,16 @@ export class Room {
   #position;
   #positionSent = 0;
   #positionTimer;
-  #cabinet;
+  #sitting;
   #links = new Map();
   #waitingSignals = new Map();
+  #handovers = new Map();
 
   /**
    * @param url the room's WebSocket, e.g. wss://host/ws/main
-   * @param events welcome(), moved(id, x, y, flip), left(id), seats(cabinet, players), full(cabinet)
+   * @param events welcome(), moved(id, x, y, flip), left(id), seats(cabinet, players),
+   *   full(cabinet), message(from, data) from another player at our cabinet,
+   *   handover(from, epoch, bytes) a game handed over (see handOver)
    */
   constructor(url, events) {
     this.#url = url;
@@ -54,25 +63,31 @@ export class Room {
     }, wait);
   }
 
-  sit(cabinet) {
-    this.#cabinet = cabinet;
-    this.#send({ type: "sit", cabinet });
+  /** Takes a free seat at a cabinet whose game takes `seats` players. */
+  sit(cabinet, seats) {
+    this.#sitting = { type: "sit", cabinet, seats };
+    this.#send(this.#sitting);
   }
 
   stand() {
-    this.#cabinet = undefined;
+    this.#sitting = undefined;
     this.#send({ type: "stand" });
+  }
+
+  /** A message for another player at our cabinet (it arrives as events.message). */
+  message(to, data) {
+    this.#send({ type: "signal", to, data });
   }
 
   /**
    * A link to another player for game packets. Packets go through the room at first and
-   * straight to the other browser (WebRTC) once that connects. Seat 0 makes the WebRTC offer.
-   * `match` names this game (both players pass the same), so WebRTC messages left over from
-   * an earlier one are ignored.
+   * straight to the other browser (WebRTC) once that connects. One side `offers` WebRTC.
+   * `match` names the link (both sides pass the same), so WebRTC messages left over from an
+   * earlier link are ignored.
    */
-  link(partner, seat, match) {
+  link(partner, offers, match) {
     this.#links.get(partner)?.close();
-    const link = new Link(this, partner, seat === 0, match);
+    const link = new Link(this, partner, offers, match);
     this.#links.set(partner, link);
     for (const data of this.#waitingSignals.get(partner) ?? []) link.signal(data);
     this.#waitingSignals.delete(partner);
@@ -84,15 +99,31 @@ export class Room {
     if (this.#links.get(link.partner) === link) this.#links.delete(link.partner);
   }
 
-  signal(to, data) {
-    this.#send({ type: "signal", to, data });
+  /** Hands a game (a machine's capture) to another player, in pieces through the room. */
+  handOver(to, epoch, bytes) {
+    const count = Math.max(1, Math.ceil(bytes.length / HANDOVER_PIECE));
+    for (let index = 0; index < count; index++) {
+      const header = new DataView(new ArrayBuffer(9));
+      header.setUint8(0, HANDOVER);
+      header.setUint32(1, epoch, true);
+      header.setUint16(5, index, true);
+      header.setUint16(7, count, true);
+      const piece = bytes.subarray(index * HANDOVER_PIECE, (index + 1) * HANDOVER_PIECE);
+      this.#sendBinary(to, new Uint8Array(header.buffer), piece);
+    }
   }
 
+  /** A game packet (an ArrayBuffer) for another player, through the room. */
   relay(to, packet) {
+    this.#sendBinary(to, Uint8Array.of(PACKET), new Uint8Array(packet));
+  }
+
+  #sendBinary(to, header, body) {
     if (this.#ws?.readyState !== WebSocket.OPEN) return;
-    const message = new Uint8Array(4 + packet.byteLength);
+    const message = new Uint8Array(4 + header.length + body.length);
     new DataView(message.buffer).setUint32(0, to, true);
-    message.set(new Uint8Array(packet), 4);
+    message.set(header, 4);
+    message.set(body, 4 + header.length);
     this.#ws.send(message);
   }
 
@@ -103,7 +134,7 @@ export class Room {
   #connect(retryMs) {
     const ws = (this.#ws = new WebSocket(this.#url));
     ws.binaryType = "arraybuffer";
-    ws.onmessage = ({ data }) => (typeof data === "string" ? this.#receive(JSON.parse(data)) : this.#packet(data));
+    ws.onmessage = ({ data }) => (typeof data === "string" ? this.#receive(JSON.parse(data)) : this.#binary(data));
     ws.onopen = () => (retryMs = 1000);
     ws.onclose = () => {
       this.seats.clear();
@@ -122,7 +153,7 @@ export class Room {
         for (const [cabinet, players] of this.seats) events.seats(cabinet, players);
         // Back again after a lost connection, with a new id: say where we are and sit back down.
         if (this.#position) this.#send(this.#position);
-        if (this.#cabinet) this.sit(this.#cabinet);
+        if (this.#sitting) this.#send(this.#sitting);
         break;
       case "moved":
         if (message.id !== this.id) events.moved(message.id, message.x, message.y, message.flip);
@@ -138,21 +169,43 @@ export class Room {
         events.full(message.cabinet);
         break;
       case "signal": {
-        const link = this.#links.get(message.from);
-        if (link) link.signal(message.data);
-        else this.#waitingSignals.set(message.from, [...(this.#waitingSignals.get(message.from) ?? []), message.data]);
+        const { from, data } = message;
+        if (!data.link) {
+          events.message(from, data);
+          break;
+        }
+        // WebRTC, for a link that may not exist yet.
+        const link = this.#links.get(from);
+        if (link) link.signal(data);
+        else this.#waitingSignals.set(from, [...(this.#waitingSignals.get(from) ?? []), data]);
         break;
       }
     }
   }
 
-  #packet(message) {
-    const from = new DataView(message).getUint32(0, true);
-    this.#links.get(from)?.onpacket(message.slice(4));
+  #binary(message) {
+    const view = new DataView(message);
+    const from = view.getUint32(0, true);
+    if (view.getUint8(4) === PACKET) {
+      this.#links.get(from)?.onpacket(message.slice(5));
+      return;
+    }
+    const epoch = view.getUint32(5, true);
+    const index = view.getUint16(9, true);
+    const count = view.getUint16(11, true);
+    const key = `${from}/${epoch}`;
+    const pieces = this.#handovers.get(key) ?? [];
+    pieces[index] = new Uint8Array(message, 13);
+    this.#handovers.set(key, pieces);
+    if (pieces.filter(Boolean).length < count) return;
+    this.#handovers.delete(key);
+    const bytes = new Uint8Array(pieces.reduce((total, piece) => total + piece.length, 0));
+    pieces.reduce((offset, piece) => (bytes.set(piece, offset), offset + piece.length), 0);
+    this.#events.handover(from, epoch, bytes);
   }
 }
 
-/** Game packets to and from the other player at a cabinet. */
+/** Game packets to and from another player at our cabinet. */
 class Link {
   /** Called with each packet (an ArrayBuffer) from the other player. */
   onpacket = () => {};
@@ -182,8 +235,8 @@ class Link {
     else this.#room.relay(this.partner, packet);
   }
 
-  async signal({ match, description, candidate }) {
-    if (match !== this.#match) return;
+  async signal({ link, description, candidate }) {
+    if (link !== this.#match) return;
     await this.#ready;
     if (this.#closed) return;
     try {
@@ -227,7 +280,7 @@ class Link {
   }
 
   #signal(data) {
-    this.#room.signal(this.partner, { match: this.#match, ...data });
+    this.#room.message(this.partner, { link: this.#match, ...data });
   }
 
   #use(channel) {

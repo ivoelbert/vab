@@ -95,8 +95,9 @@ export class Core {
     const loaded = m._retro_load_game(info);
     m._free(info);
     if (!loaded) throw new Error(`The core could not load ${fileName}`);
-    m._retro_set_controller_port_device(0, DEVICE_JOYPAD);
-    m._retro_set_controller_port_device(1, DEVICE_JOYPAD);
+    for (let port = 0; port < this.inputs.length; port++) {
+      m._retro_set_controller_port_device(port, DEVICE_JOYPAD);
+    }
 
     // struct retro_system_av_info { geometry { u32 w, h, max_w, max_h; f32 aspect } timing { f64 fps, sample_rate } }
     const av = m._malloc(40);

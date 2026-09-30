@@ -119,8 +119,11 @@ fn show_hint(
     });
     let label = match seated {
         0 => format!("E  {}", game.title),
-        1 => format!("E  {} - 1 playing, join in", game.title),
-        _ => format!("{} - 2 playing", game.title),
+        n if n >= game.players => format!("{} - {n} playing", game.title),
+        n => format!(
+            "E  {} - {n} of {} playing, join in",
+            game.title, game.players
+        ),
     };
     if text.0 != label {
         text.0 = label;
