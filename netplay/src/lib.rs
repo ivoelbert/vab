@@ -6,6 +6,9 @@
 //!
 //! A session has a fixed set of players. When someone joins or leaves, the page starts a new
 //! session for everyone from one machine's capture, so GGRS never has to drop a player.
+//!
+//! The session also keeps each frame's inputs, so the worker can stream the game to people
+//! watching it: frames no input can change anymore, from a state no rollback can change.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -20,6 +23,9 @@ use wasm_bindgen::prelude::*;
 
 /// Frames between checks that all machines still match (hashes of the game's RAM).
 const DESYNC_INTERVAL: i32 = 60;
+/// How many recent frames' inputs are kept for watchers: a few seconds, far more than the
+/// worker lets pile up between reading them.
+const KEPT_FRAMES: usize = 256;
 
 struct Cabinet;
 
@@ -82,6 +88,10 @@ pub struct Session {
     local: usize,
     players: usize,
     slots: i32,
+    /// The inputs each recent frame last ran with, in handle order, at `frame % KEPT_FRAMES`.
+    ran: Vec<(i32, [u16; 4])>,
+    /// `confirmedFrame`, as of the end of the last `advance`.
+    confirmed: i32,
 }
 
 #[wasm_bindgen]
@@ -128,7 +138,44 @@ impl Session {
             // GGRS keeps max_rollback + 1 frames; one more slot so a frame it may still load
             // is never overwritten.
             slots: max_rollback as i32 + 2,
+            ran: vec![(-1, [0; 4]); KEPT_FRAMES],
+            confirmed: -1,
         })
+    }
+
+    /// The frame this machine runs next; frames count from 0 at the start of the session.
+    #[wasm_bindgen(js_name = currentFrame)]
+    pub fn current_frame(&self) -> i32 {
+        self.ggrs.current_frame()
+    }
+
+    /// The last frame that ran with every player's real input, so no rollback can change it or
+    /// anything before it; -1 before there is one.
+    #[wasm_bindgen(js_name = confirmedFrame)]
+    pub fn confirmed_frame(&self) -> i32 {
+        self.confirmed
+    }
+
+    /// The save slot that holds the machine as it was before running `frame`, one of the
+    /// frames since `confirmedFrame`. The machine itself is at `currentFrame`.
+    pub fn slot(&self, frame: i32) -> u32 {
+        frame.rem_euclid(self.slots) as u32
+    }
+
+    /// Every player's input (in handle order) for each frame from `from` to `confirmedFrame`,
+    /// one after another. Frames older than the last few seconds are gone: empty then.
+    #[wasm_bindgen(js_name = confirmedInputs)]
+    pub fn confirmed_inputs(&self, from: i32) -> Vec<u16> {
+        let to = self.confirmed_frame();
+        let mut inputs = Vec::new();
+        for frame in from.max(0)..=to {
+            let (ran, frame_inputs) = &self.ran[frame as usize % KEPT_FRAMES];
+            if *ran != frame {
+                return Vec::new();
+            }
+            inputs.extend_from_slice(&frame_inputs[..self.players]);
+        }
+        inputs
     }
 
     /// A packet from player `from`.
@@ -184,24 +231,35 @@ impl Session {
         let shown = requests
             .iter()
             .rposition(|request| matches!(request, GgrsRequest::AdvanceFrame { .. }));
+        // The frame the machine is at, through rollbacks.
+        let mut at = self.ggrs.current_frame();
         for (i, request) in requests.into_iter().enumerate() {
             match request {
                 GgrsRequest::SaveGameState { cell, frame } => {
-                    let slot = frame.rem_euclid(self.slots) as u32;
+                    let slot = self.slot(frame);
                     let checksum = machine.save(slot, frame % DESYNC_INTERVAL == 0);
                     cell.save(frame, Some(slot), checksum.map(u128::from));
+                    at = frame;
                 }
-                GgrsRequest::LoadGameState { cell, .. } => {
+                GgrsRequest::LoadGameState { cell, frame } => {
                     if let Some(slot) = cell.load() {
                         machine.load(slot);
                     }
+                    at = frame;
                 }
                 GgrsRequest::AdvanceFrame { inputs } => {
-                    let inputs = inputs.iter().map(|(input, _)| *input).collect();
+                    let inputs: Vec<u16> = inputs.iter().map(|(input, _)| *input).collect();
+                    let mut kept = [0; 4];
+                    kept[..inputs.len()].copy_from_slice(&inputs);
+                    self.ran[at as usize % KEPT_FRAMES] = (at, kept);
+                    at += 1;
                     machine.run(inputs, Some(i) == shown);
                 }
             }
         }
+        // Not between `poll` and here: inputs received there are confirmed before the rollback
+        // that corrects the frames they're for.
+        self.confirmed = self.ggrs.confirmed_frame().min(at - 1).max(-1);
         Ok(true)
     }
 

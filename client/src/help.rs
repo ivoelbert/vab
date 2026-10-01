@@ -21,9 +21,10 @@ const DIM: Color = Color::srgba(1.0, 1.0, 1.0, 0.6);
 
 /// What to press, and what it does. Short enough not to wrap: keys are padded into a column
 /// (the font is monospaced).
-const IN_THE_BAR: [(&str, &str); 5] = [
+const IN_THE_BAR: [(&str, &str); 6] = [
     ("Arrows / W A S D", "Walk"),
     ("E", "Play the cabinet you're next to"),
+    ("F", "Watch the game being played there"),
     ("Y", "Chat (Enter sends)"),
     ("/name Mauri", "Set your name, in the chat"),
     ("/help", "These controls, in the chat"),
@@ -147,7 +148,7 @@ fn spawn_help(mut commands: Commands) {
                     panel
                         .spawn(text("", 14.0, Color::WHITE))
                         .with_children(|body| {
-                            let sections =
+                            let sections: [(&str, &[(&str, &str)]); 2] =
                                 [("In the bar", &IN_THE_BAR), ("At a cabinet", &AT_A_CABINET)];
                             for (i, (heading, rows)) in sections.into_iter().enumerate() {
                                 let gap = if i == 0 { "" } else { "\n" };
@@ -240,12 +241,15 @@ fn show_help(
     mut asked: MessageReader<ShowHelp>,
     mut help: ResMut<Help>,
     mode: Res<State<Mode>>,
+    game: Option<Res<PlayingGame>>,
     time: Res<Time>,
     mut panel: Single<&mut Visibility, With<Panel>>,
 ) {
     let welcome = WELCOME.take();
+    // Watching, there are no buttons to list: the panel instead.
+    let playing = *mode.get() == Mode::Playing && game.is_some_and(|game| !game.watching);
     for _ in asked.read() {
-        if *mode.get() == Mode::Playing {
+        if playing {
             help.card_until = time.elapsed_secs() + CARD_FOR;
         } else {
             help.open = true;

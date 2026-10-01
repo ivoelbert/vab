@@ -10,22 +10,43 @@
 // When players join or leave, one machine (the page picks it) captures the game as it is and
 // every player starts a new session from that capture.
 //
+// People watching the cabinet run the game too, a little behind: one player's machine (the page
+// picks it) streams them a state and then every player's input for each frame from there on,
+// only frames no rollback can change anymore. The watchers' machines play those frames as they
+// come in, keeping a few in hand so they play evenly.
+//
 // In:  { type: "start", core, rom, files, state, seat, turns, port, hold }
 //        Loads the game. `files` (a BIOS) and `state` are optional: skipped if missing. Plays
-//        alone right away, or with `hold` waits for "online" (joining a game in progress).
+//        alone right away, or with `hold` waits for "online" (joining a game in progress) or
+//        "watch-state" (watching; no `seat` or `port` then).
 //      { type: "capture", epoch } Stops and captures the machine, for a change of players.
 //      { type: "online", epoch, seats, state } Plays in step with the players in `seats` (their
 //        seat numbers, ascending) from `state`, or from this machine's capture for `epoch`.
 //      { type: "solo" } Everyone else left: play on alone.
+//      { type: "stream", on } Streams this machine's game to the watchers, or stops.
+//      { type: "snapshot", to } A state for a new watcher, to go on from with the stream.
+//      { type: "watch-state", bytes } | { type: "watch-inputs", frame, inputs } Watching: a
+//        stream's state and inputs, as they're sent out (below).
 //      { type: "input", mask } | { type: "audio", port }
-// Out: { type: "frame", rgba, width, height } | { type: "netplay", event, seat, ... } |
-//      { type: "captured", epoch, state } | { type: "buttons", buttons } what the game calls
-//      player 1's buttons, [RetroPad id, name] pairs, once known
+// Out: { type: "ready" } the game is loaded | { type: "frame", rgba, width, height } |
+//      { type: "netplay", event, seat, ... } | { type: "captured", epoch, state } |
+//      { type: "buttons", buttons } what the game calls player 1's buttons, [RetroPad id, name]
+//      pairs, once known | { type: "watch-state", stream, bytes, to } the machine for watchers
+//      to start from, [frame: u32 LE][state], for the watcher `to` or, without it, for all |
+//      { type: "watch-inputs", stream, frame, inputs } a Uint16Array with a mask per controller
+//      port (4) for each frame from `frame` on, a few times a second. `stream` counts up each
+//      time the stream starts over (a new session); inputs go on from that stream's states.
 import { Core } from "./libretro.js";
 
 // RetroPad bits (libretro.h).
 const SELECT = 1 << 2; // coin
 const START = 1 << 3;
+/** Controller ports, as many as libretro.js has. */
+const PORTS = 4;
+/** How often watchers get the frames since the last time, in ms. */
+const STREAM_EVERY = 100;
+/** Frames a watcher has in hand before playing: a little more than arrive at once. */
+const WATCH_BUFFER = 12;
 
 let audioPort;
 let localMask = 0;
@@ -83,8 +104,16 @@ async function start({ core: coreUrl, rom: romUrl, files = [], state: stateUrl, 
   cab.paused = Boolean(hold);
   await netplay;
   cabinet = cab;
+  postMessage({ type: "ready" });
   for (const msg of waiting.splice(0)) cab.handle(msg);
   cab.tick();
+}
+
+/** A mask per controller port: `inputs[i]` on seat `seats[i]`'s, nothing on the others. */
+function byPort(inputs, seats) {
+  const ports = new Uint16Array(PORTS);
+  inputs.forEach((mask, i) => (ports[seats[i]] = mask));
+  return ports;
 }
 
 class Cabinet {
@@ -106,6 +135,17 @@ class Cabinet {
   #tuned;
   /** This machine at the last change of players, until the next session starts from it. */
   #captured;
+  /**
+   * Streaming to watchers: the stream's number, the frame they get next, inputs (a mask per
+   * port per frame) not sent yet, and when inputs last went out.
+   */
+  #stream;
+  #streams = 0;
+  /**
+   * Watching: frames to run (a mask per port each), the frame after the last, and whether it's
+   * waiting to have a few in hand.
+   */
+  #watch;
   #next = performance.now();
   #nextStats = 0;
   #buttonsSent = false;
@@ -115,6 +155,7 @@ class Cabinet {
     this.#seat = seat;
     this.#turns = turns;
     this.#port = port;
+    if (!port) return; // watching
     port.onmessage = ({ data: [seat, packet] }) => {
       const handle = this.#seats?.indexOf(seat) ?? -1;
       const bytes = new Uint8Array(packet);
@@ -126,7 +167,17 @@ class Cabinet {
   handle(msg) {
     if (msg.type === "capture") this.#capture(msg.epoch);
     if (msg.type === "online") this.#online(msg);
-    if (msg.type === "solo") this.#leaveSession();
+    if (msg.type === "solo") {
+      this.#leaveSession();
+      if (this.#stream) this.#startStream();
+    }
+    if (msg.type === "stream") {
+      if (!msg.on) this.#stream = undefined;
+      else if (!this.#stream) this.#startStream();
+    }
+    if (msg.type === "snapshot" && this.#stream) this.#sendState(msg.to);
+    if (msg.type === "watch-state") this.#watchFrom(msg.bytes);
+    if (msg.type === "watch-inputs") this.#watchInputs(msg);
   }
 
   tick = () => {
@@ -166,12 +217,32 @@ class Cabinet {
     } else if (this.paused) {
       this.#next = performance.now();
       wait = 5;
+    } else if (this.#watch) {
+      const watch = this.#watch;
+      if (watch.waiting && watch.frames.length >= WATCH_BUFFER) watch.waiting = false;
+      if (watch.waiting) {
+        this.#next = performance.now();
+        wait = 5;
+      }
+      for (let i = 0; i < 4 && !watch.waiting && performance.now() >= this.#next; i++) {
+        // Ran out: wait to have a few in hand again rather than stutter frame by frame.
+        if (!watch.frames.length) {
+          watch.waiting = true;
+          break;
+        }
+        this.#run(watch.frames.shift(), true);
+        // A little faster while far behind the stream (frames came in after a hiccup).
+        this.#next += watch.frames.length > WATCH_BUFFER * 2.5 ? frameMs * 0.9 : frameMs;
+      }
     } else {
       for (let i = 0; i < 4 && performance.now() >= this.#next; i++) {
-        this.#run([localMask], [this.#seat], true);
+        const ports = byPort([localMask], [this.#seat]);
+        this.#run(ports, true);
+        this.#stream?.inputs.push(...ports);
         this.#next += frameMs;
       }
     }
+    if (this.#stream) this.#flush();
     // After a long pause (hidden tab), carry on from now instead of fast-forwarding.
     if (performance.now() - this.#next > 250) this.#next = performance.now();
     if (this.frame) {
@@ -188,14 +259,13 @@ class Cabinet {
       return checksum ? hashRam(this.core.systemRam()) : undefined;
     },
     load: (slot) => this.core.loadSlot(slot),
-    run: (inputs, present) => this.#run(inputs, this.#seats, present),
+    run: (inputs, present) => this.#run(byPort(inputs, this.#seats), present),
   };
 
-  /** Runs a frame with `inputs[i]` on seat `seats[i]`'s controller port. */
-  #run(inputs, seats, present) {
+  /** Runs a frame with a mask per controller port. */
+  #run(masks, present) {
     const ports = this.core.inputs;
-    ports.fill(0);
-    inputs.forEach((mask, i) => (ports[seats[i]] = mask));
+    ports.set(masks);
     // Turn-based games (Pac-Man, Wonder Boy) read player 1's controls on either player's turn,
     // like an upright cabinet, so player 2's stick and buttons go there too; only their Start
     // and Coin stay on port 2.
@@ -238,6 +308,7 @@ class Cabinet {
     this.#session = new Session(seats.length, seats.indexOf(this.#seat), delay, rollback, Math.round(this.fps));
     this.paused = false;
     this.#next = performance.now();
+    if (this.#stream) this.#startStream();
   }
 
   #leaveSession() {
@@ -245,6 +316,70 @@ class Cabinet {
     this.#session = undefined;
     this.#seats = undefined;
     this.paused = false;
+  }
+
+  /** Streams from here: the machine as it is now, or online as of the last confirmed frame. */
+  #startStream() {
+    const frame = this.#session ? this.#session.confirmedFrame() + 1 : 0;
+    this.#stream = { id: ++this.#streams, frame, inputs: [], sentAt: 0 };
+    this.#sendState();
+  }
+
+  /**
+   * Sends the frames since the last time, a few times a second (or now with `now`). Online,
+   * those are the frames GGRS has confirmed since; alone, every frame run.
+   */
+  #flush(now = false) {
+    const stream = this.#stream;
+    if (this.#session) {
+      const players = this.#seats.length;
+      const confirmed = this.#session.confirmedInputs(stream.frame + stream.inputs.length / PORTS);
+      for (let i = 0; i < confirmed.length; i += players) {
+        stream.inputs.push(...byPort(confirmed.subarray(i, i + players), this.#seats));
+      }
+    }
+    if (!stream.inputs.length || (!now && performance.now() - stream.sentAt < STREAM_EVERY)) return;
+    const inputs = Uint16Array.from(stream.inputs);
+    postMessage({ type: "watch-inputs", stream: stream.id, frame: stream.frame, inputs }, [inputs.buffer]);
+    stream.frame += stream.inputs.length / PORTS;
+    stream.inputs = [];
+    stream.sentAt = performance.now();
+  }
+
+  /**
+   * The machine at the frame the stream goes on from, for one watcher or all. Online it's the
+   * save GGRS made before that frame, unless the machine is there now.
+   */
+  #sendState(to) {
+    this.#flush(true);
+    const { id, frame } = this.#stream;
+    const session = this.#session;
+    const state =
+      session && frame < session.currentFrame() ? this.core.slotBytes(session.slot(frame)) : this.core.serialize();
+    const bytes = new Uint8Array(4 + state.length);
+    new DataView(bytes.buffer).setUint32(0, frame, true);
+    bytes.set(state, 4);
+    postMessage({ type: "watch-state", stream: id, bytes, to }, [bytes.buffer]);
+  }
+
+  #watchFrom(bytes) {
+    const frame = new DataView(bytes.buffer, bytes.byteOffset).getUint32(0, true);
+    this.core.unserialize(bytes.subarray(4));
+    this.#watch = { frames: [], end: frame, waiting: true };
+    this.paused = false;
+  }
+
+  #watchInputs({ frame, inputs }) {
+    const watch = this.#watch;
+    if (!watch) return;
+    if (frame > watch.end) {
+      console.warn(`Watching: frames ${watch.end}-${frame - 1} never came`);
+      return;
+    }
+    for (let i = (watch.end - frame) * PORTS; i < inputs.length; i += PORTS) {
+      watch.frames.push(inputs.subarray(i, i + PORTS));
+    }
+    watch.end = Math.max(watch.end, frame + inputs.length / PORTS);
   }
 }
 

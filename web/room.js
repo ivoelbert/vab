@@ -1,5 +1,6 @@
 // The page's connection to its bar room (the Room Durable Object in server/src/lib.rs): where
-// the other players are, who sits at which cabinet, and links to the others at ours.
+// the other players are, who sits at or watches which cabinet, links to the others at ours, and
+// the game streamed to whoever watches it.
 
 // WebRTC servers from the Worker (/ice): STUN, and TURN when it is set up. Its credentials last
 // a day; fetched again after 12 hours.
@@ -17,16 +18,24 @@ function getIceServers() {
 }
 
 // Binary messages through the room, after its [player id: u32] address: a kind byte, then a
-// game packet, or a piece of a game handed over: [epoch: u32][index: u16][count: u16][bytes].
+// game packet, a piece of something bigger, [id: u32][index: u16][count: u16][bytes] (a game
+// handed over, its id the epoch, or a watch state, its id the stream), or watch inputs,
+// [stream: u32][frame: u32][a u16 mask per controller port per frame].
 const PACKET = 0;
 const HANDOVER = 1;
-const HANDOVER_PIECE = 256 * 1024; // the room takes messages up to 1 MiB
+const WATCH_STATE = 2;
+const WATCH_INPUTS = 3;
+const PIECE = 256 * 1024; // the room takes messages up to 1 MiB
+/** The address of everyone watching our cabinet. */
+const WATCHERS = 0;
 
 export class Room {
   /** This player's id in the room, from its welcome. */
   id;
   /** Who sits at each cabinet: cabinet ("x,y") -> a player id or null per seat. */
   seats = new Map();
+  /** Who watches each cabinet's game: cabinet -> player ids. */
+  watchers = new Map();
 
   #url;
   #events;
@@ -34,17 +43,20 @@ export class Room {
   #position;
   #positionSent = 0;
   #positionTimer;
-  #sitting;
+  /** Where this player sits or watches: the message saying so, sent again after reconnecting. */
+  #place;
   #name;
   #links = new Map();
   #waitingSignals = new Map();
-  #handovers = new Map();
+  #pieces = new Map();
 
   /**
    * @param url the room's WebSocket, e.g. wss://host/ws/main
    * @param events welcome(name), moved(id, x, y, flip, name), left(id), said(id, name, text),
-   *   seats(cabinet, players), full(cabinet), message(from, data) from another player at our
-   *   cabinet, handover(from, epoch, bytes) a game handed over (see handOver)
+   *   seats(cabinet, players), full(cabinet), watchers(cabinet, players), message(from, data)
+   *   from another player at our cabinet, handover(from, epoch, bytes) a game handed over (see
+   *   handOver), watchState(from, stream, bytes) and watchInputs(from, stream, frame, inputs)
+   *   the game we watch (see watchState and watchInputs)
    * @param name this player's name, if they set one before; else the room gives one
    */
   constructor(url, events, name) {
@@ -79,12 +91,19 @@ export class Room {
 
   /** Takes a free seat at a cabinet whose game takes `seats` players. */
   sit(cabinet, seats) {
-    this.#sitting = { type: "sit", cabinet, seats };
-    this.#send(this.#sitting);
+    this.#place = { type: "sit", cabinet, seats };
+    this.#send(this.#place);
   }
 
+  /** Watches the game at a cabinet: one of its players streams it here. */
+  watch(cabinet) {
+    this.#place = { type: "watch", cabinet };
+    this.#send(this.#place);
+  }
+
+  /** Leaves the seat, or stops watching. */
   stand() {
-    this.#sitting = undefined;
+    this.#place = undefined;
     this.#send({ type: "stand" });
   }
 
@@ -115,14 +134,35 @@ export class Room {
 
   /** Hands a game (a machine's capture) to another player, in pieces through the room. */
   handOver(to, epoch, bytes) {
-    const count = Math.max(1, Math.ceil(bytes.length / HANDOVER_PIECE));
+    this.#sendPieces(to, HANDOVER, epoch, bytes);
+  }
+
+  /**
+   * Starts a watcher (`to`) on our game, or everyone watching our cabinet without `to`: a
+   * state from the emulator worker ([frame][machine]) that its `stream`'s inputs go on from.
+   */
+  watchState(to, stream, bytes) {
+    this.#sendPieces(to ?? WATCHERS, WATCH_STATE, stream, bytes);
+  }
+
+  /** Inputs for everyone watching our cabinet: a Uint16Array, a mask per port per frame. */
+  watchInputs(stream, frame, inputs) {
+    const header = new DataView(new ArrayBuffer(9));
+    header.setUint8(0, WATCH_INPUTS);
+    header.setUint32(1, stream, true);
+    header.setUint32(5, frame, true);
+    this.#sendBinary(WATCHERS, new Uint8Array(header.buffer), new Uint8Array(inputs.buffer, inputs.byteOffset, inputs.byteLength));
+  }
+
+  #sendPieces(to, kind, id, bytes) {
+    const count = Math.max(1, Math.ceil(bytes.length / PIECE));
     for (let index = 0; index < count; index++) {
       const header = new DataView(new ArrayBuffer(9));
-      header.setUint8(0, HANDOVER);
-      header.setUint32(1, epoch, true);
+      header.setUint8(0, kind);
+      header.setUint32(1, id, true);
       header.setUint16(5, index, true);
       header.setUint16(7, count, true);
-      const piece = bytes.subarray(index * HANDOVER_PIECE, (index + 1) * HANDOVER_PIECE);
+      const piece = bytes.subarray(index * PIECE, (index + 1) * PIECE);
       this.#sendBinary(to, new Uint8Array(header.buffer), piece);
     }
   }
@@ -154,6 +194,7 @@ export class Room {
     ws.onopen = () => (retryMs = 1000);
     ws.onclose = () => {
       this.seats.clear();
+      this.watchers.clear();
       setTimeout(() => this.#connect(Math.min(retryMs * 2, 10000)), retryMs);
     };
   }
@@ -164,13 +205,16 @@ export class Room {
       case "welcome":
         this.id = message.id;
         this.seats = new Map(Object.entries(message.seats));
+        this.watchers = new Map(Object.entries(message.watchers));
         if (this.#name) this.#send({ type: "name", name: this.#name });
         events.welcome(this.#name ?? message.name);
         for (const { id, x, y, flip, name } of message.players) events.moved(id, x, y, flip, name);
         for (const [cabinet, players] of this.seats) events.seats(cabinet, players);
-        // Back again after a lost connection, with a new id: say where we are and sit back down.
+        for (const [cabinet, players] of this.watchers) events.watchers(cabinet, players);
+        // Back again after a lost connection, with a new id: say where we are and sit back down
+        // (or watch again).
         if (this.#position) this.#send(this.#position);
-        if (this.#sitting) this.#send(this.#sitting);
+        if (this.#place) this.#send(this.#place);
         break;
       case "moved":
         if (message.id !== this.id) events.moved(message.id, message.x, message.y, message.flip, message.name);
@@ -187,6 +231,10 @@ export class Room {
         break;
       case "full":
         events.full(message.cabinet);
+        break;
+      case "watchers":
+        this.watchers.set(message.cabinet, message.players);
+        events.watchers(message.cabinet, message.players);
         break;
       case "signal": {
         const { from, data } = message;
@@ -206,22 +254,29 @@ export class Room {
   #binary(message) {
     const view = new DataView(message);
     const from = view.getUint32(0, true);
-    if (view.getUint8(4) === PACKET) {
+    const kind = view.getUint8(4);
+    if (kind === PACKET) {
       this.#links.get(from)?.onpacket(message.slice(5));
       return;
     }
-    const epoch = view.getUint32(5, true);
+    const id = view.getUint32(5, true);
+    if (kind === WATCH_INPUTS) {
+      // Copied: a Uint16Array can't start at an odd offset.
+      this.#events.watchInputs(from, id, view.getUint32(9, true), new Uint16Array(message.slice(13)));
+      return;
+    }
     const index = view.getUint16(9, true);
     const count = view.getUint16(11, true);
-    const key = `${from}/${epoch}`;
-    const pieces = this.#handovers.get(key) ?? [];
+    const key = `${from}/${kind}/${id}`;
+    const pieces = this.#pieces.get(key) ?? [];
     pieces[index] = new Uint8Array(message, 13);
-    this.#handovers.set(key, pieces);
+    this.#pieces.set(key, pieces);
     if (pieces.filter(Boolean).length < count) return;
-    this.#handovers.delete(key);
+    this.#pieces.delete(key);
     const bytes = new Uint8Array(pieces.reduce((total, piece) => total + piece.length, 0));
     pieces.reduce((offset, piece) => (bytes.set(piece, offset), offset + piece.length), 0);
-    this.#events.handover(from, epoch, bytes);
+    if (kind === HANDOVER) this.#events.handover(from, id, bytes);
+    if (kind === WATCH_STATE) this.#events.watchState(from, id, bytes);
   }
 }
 

@@ -1,8 +1,9 @@
 //! Plays a cabinet's game with the page's emulator worker (web/emulator/worker.js). The page
-//! sits the player at the cabinet and plays alone or online with whoever takes the other seat.
-//! Frames come in through `push_frame` and fill the screen, a status line (who you play with,
-//! the connection) through `game_status`, the player's buttons go out through `emulatorInput`,
-//! and Esc stops the game and returns to the bar.
+//! sits the player at the cabinet and plays alone or online with whoever takes the other seat,
+//! or has them watch the game the players there are playing. Frames come in through
+//! `push_frame` and fill the screen, a status line (who you play with, the connection) through
+//! `game_status`, the player's buttons go out through `emulatorInput`, and Esc stops the game
+//! and returns to the bar.
 
 use std::cell::RefCell;
 
@@ -62,6 +63,9 @@ extern "C" {
         turns: bool,
         players: u32,
     );
+    /// Watches the game at `cabinet` ("x,y"), streamed from one of its players.
+    #[wasm_bindgen(js_name = emulatorWatch)]
+    fn emulator_watch(core: &str, rom: &str, bios: Option<String>, cabinet: &str, turns: bool);
     #[wasm_bindgen(js_name = emulatorStop)]
     fn emulator_stop();
     /// Sends the player's RetroPad mask to the worker, for their seat's controller.
@@ -69,10 +73,11 @@ extern "C" {
     fn emulator_input(mask: u16);
 }
 
-/// The game being played, while `Mode::Playing`.
+/// The game being played or watched, while `Mode::Playing`.
 #[derive(Resource)]
 pub struct PlayingGame {
     pub title: String,
+    pub watching: bool,
 }
 
 /// Starts the game at the cabinet in `cell`; switch to `Mode::Playing` to show it.
@@ -89,6 +94,15 @@ pub fn play(cell: IVec2, game: &Game) {
         game.turns,
         game.players,
     );
+}
+
+/// Watches the game being played at the cabinet in `cell`; switch to `Mode::Playing` to show it.
+pub fn watch(cell: IVec2, game: &Game) {
+    LATEST_FRAME.set(None);
+    LATEST_STATUS.set(None);
+    let cabinet = cabinet_id(cell);
+    let bios = game.bios.clone();
+    emulator_watch(&game.core, &game.rom, bios, &cabinet, game.turns);
 }
 
 /// How the page and the room name a cabinet: its cell, "x,y".
