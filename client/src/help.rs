@@ -29,11 +29,13 @@ const IN_THE_BAR: [(&str, &str); 6] = [
     ("/name Mauri", "Set your name, in the chat"),
     ("/help", "These controls, in the chat"),
 ];
-const AT_A_CABINET: [(&str, &str); 5] = [
+const AT_A_CABINET: [(&str, &str); 7] = [
     ("5", "Insert a coin"),
     ("1", "Start"),
     ("Arrows", "Move"),
     ("Z X C  A S D", "Buttons, listed when a game starts"),
+    ("M", "Your microphone, playing with others"),
+    ("Shift+1-4", "Mute player 1-4 (or click them)"),
     ("Esc", "Stand up"),
 ];
 const KEY_COLUMN: usize = 18;

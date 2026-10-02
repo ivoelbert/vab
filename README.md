@@ -5,7 +5,8 @@ player: arrows or WASD walk, and floor tiles without an object are walkable. Eve
 is in the same bar room and sees the others walk around (`?room=<name>` opens a separate one).
 E next to a cabinet sits you at it: you start its game, or join the one being played there
 (see [Online play](#online-play)). F watches the game being played there, as does E once every
-seat is taken (see [Watching](#watching)). Esc stands up. Y opens the chat for everyone in the room;
+seat is taken (see [Watching](#watching)). Players at a cabinet can talk (see [Voice](#voice)).
+Esc stands up. Y opens the chat for everyone in the room;
 `/name <name>` there sets the name shown above your head, and a cookie keeps it. The controls
 show on a first visit and with `/help`; when a game starts, a card lists its buttons as the game
 names them (the core reports them, e.g. "Z  Low Punch").
@@ -123,6 +124,18 @@ RAM every 60 frames and reports any desync.
 Game packets go through the room's WebSocket at first and straight between the browsers over
 WebRTC once that connects (`web/room.js`). Turn-based games (`turns`) use player 1's controls for
 both players, like an upright cabinet.
+
+## Voice
+
+Players at a cabinet talk over the same WebRTC connections as their game: each link carries
+audio both ways, and the microphone goes on it once the browser allows it (it asks when someone
+first plays with you). Echo cancellation and noise suppression are on; headphones still help,
+since the game's sound plays from the same speakers. A panel under the status line lists
+everyone at the cabinet like a voice channel (`client/src/voice.rs`), with a green ring while
+they talk. M turns your microphone off or on. Clicking someone, Shift with their player number,
+or `/mute <name>` in the chat mutes them for you only (`/unmute <name>` undoes it); mutes are
+remembered by name in a cookie. Voice needs the browsers to reach each other directly or through
+TURN: players whose game goes through the room show "no voice".
 
 ## Watching
 

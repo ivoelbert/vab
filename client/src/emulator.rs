@@ -234,10 +234,13 @@ fn show_status(mut status: Single<&mut Text, With<Status>>) {
 }
 
 fn send_input(keys: Res<ButtonInput<KeyCode>>, chat: Res<Chat>, mut sent: Local<u16>) {
-    // While typing in the chat, the player's hands are off the controls.
+    // While typing in the chat, the player's hands are off the controls. Shift with a number
+    // mutes a player (voice.rs), so it isn't Start or a coin.
+    let shift = keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]);
     let mask = KEYS
         .iter()
         .filter(|(key, _)| !chat.is_open() && keys.pressed(*key))
+        .filter(|(key, _)| !(shift && matches!(key, KeyCode::Digit1 | KeyCode::Digit5)))
         .fold(0, |mask, (_, id)| mask | 1 << id);
     if mask != *sent {
         emulator_input(mask);
