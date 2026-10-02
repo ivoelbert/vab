@@ -1,7 +1,8 @@
 //! The room's chat: Y opens a line to type in, Enter sends it to everyone in the bar room and
 //! Esc closes it. The latest messages show in the bottom-left corner for a while (all of them
 //! while typing). `/name <name>` sets the name shown above your head and next to what you say;
-//! the page keeps it in a cookie (web/index.html).
+//! the page keeps it in a cookie (web/index.html). On a touch screen the line is typed in the
+//! page instead, with the phone's keyboard, and comes in through `chat_typed`.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -12,6 +13,7 @@ use bevy::prelude::*;
 use wasm_bindgen::prelude::*;
 
 use crate::help::{Help, ShowHelp};
+use crate::touch::Touch;
 
 /// Lines kept and shown.
 const LINES: usize = 8;
@@ -23,6 +25,13 @@ const MAX_NAME: usize = 20;
 
 thread_local! {
     static SAID: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    static TYPED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Called by index.html with a line typed in the page's own chat box (touch screens).
+#[wasm_bindgen]
+pub fn chat_typed(text: String) {
+    TYPED.with_borrow_mut(|typed| typed.push(text));
 }
 
 /// Called by index.html with each message said in the room, ours included once the room has it.
@@ -230,11 +239,19 @@ fn spawn_chat(mut commands: Commands) {
 
 fn show_chat(
     mut chat: ResMut<Chat>,
+    touch: Res<Touch>,
     time: Res<Time>,
+    mut help: MessageWriter<ShowHelp>,
     mut log: Log,
-    mut line: Single<(&mut Text, &mut TextColor), With<ChatLine>>,
+    mut line: Single<(&mut Text, &mut TextColor, &mut Visibility), With<ChatLine>>,
 ) {
     let now = time.elapsed_secs();
+    for typed in TYPED.take() {
+        chat.typing = typed.chars().take(MAX_MESSAGE).collect();
+        if chat.send(now) {
+            help.write(ShowHelp);
+        }
+    }
     for said in SAID.take() {
         chat.add(said, now);
     }
@@ -265,9 +282,15 @@ fn show_chat(
     } else {
         (format!("> {}_", chat.typing), 1.0)
     };
-    let (line_text, line_color) = &mut *line;
+    let (line_text, line_color, line_visibility) = &mut *line;
     if line_text.0 != typed {
         line_text.0 = typed;
         line_color.0 = Color::srgba(1.0, 1.0, 1.0, typed_color);
     }
+    // A touch screen has no Y to tell of: the page's Chat button is there.
+    line_visibility.set_if_neq(if touch.is_on() && !chat.open {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    });
 }
