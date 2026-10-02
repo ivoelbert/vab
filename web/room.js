@@ -113,8 +113,9 @@ export class Room {
   }
 
   /**
-   * A link to another player for game packets. Packets go through the room at first and
-   * straight to the other browser (WebRTC) once that connects. One side `offers` WebRTC.
+   * A link to another player for game packets and voice. Packets go through the room at first
+   * and straight to the other browser (WebRTC) once that connects; voice only goes straight.
+   * One side `offers` WebRTC.
    * `match` names the link (both sides pass the same), so WebRTC messages left over from an
    * earlier link are ignored.
    */
@@ -280,10 +281,14 @@ export class Room {
   }
 }
 
-/** Game packets to and from another player at our cabinet. */
+/** Game packets and voice to and from another player at our cabinet. */
 class Link {
   /** Called with each packet (an ArrayBuffer) from the other player. */
   onpacket = () => {};
+  /** Called with the other player's voice, a MediaStream, once it's set up. */
+  onvoice = () => {};
+  /** The other player's voice, once it's set up. */
+  voice;
 
   #room;
   #match;
@@ -292,6 +297,9 @@ class Link {
   #closed = false;
   #channel;
   #candidates = [];
+  /** The audio both ways, and the microphone track we send on it. */
+  #audio;
+  #microphone = null;
 
   constructor(room, partner, offers, match) {
     this.#room = room;
@@ -310,6 +318,12 @@ class Link {
     else this.#room.relay(this.partner, packet);
   }
 
+  /** Sends them our microphone (a MediaStreamTrack), or nothing with null. */
+  microphone(track) {
+    this.#microphone = track;
+    this.#audio?.sender.replaceTrack(track).catch((error) => console.warn("Voice:", error));
+  }
+
   async signal({ link, description, candidate }) {
     if (link !== this.#match) return;
     await this.#ready;
@@ -319,6 +333,12 @@ class Link {
         await this.#pc.setRemoteDescription(description);
         for (const waiting of this.#candidates.splice(0)) await this.#pc.addIceCandidate(waiting);
         if (description.type === "offer") {
+          // Answer their audio with ours. Offers from before voice have none.
+          const audio = this.#pc.getTransceivers().find(({ receiver }) => receiver.track.kind === "audio");
+          if (audio) {
+            audio.direction = "sendrecv";
+            this.#useAudio(audio);
+          }
           await this.#pc.setLocalDescription(await this.#pc.createAnswer());
           this.#signal({ description: this.#pc.localDescription });
         }
@@ -342,9 +362,16 @@ class Link {
     if (this.#closed) return;
     const pc = (this.#pc = new RTCPeerConnection({ iceServers }));
     pc.onicecandidate = ({ candidate }) => candidate && this.#signal({ candidate });
+    pc.ontrack = ({ track, streams }) => {
+      this.voice = streams[0] ?? new MediaStream([track]);
+      this.onvoice(this.voice);
+    };
     if (offers) {
       // Unordered and never resent: GGRS resends what matters itself.
       this.#use(pc.createDataChannel("ggrs", { ordered: false, maxRetransmits: 0 }));
+      // Audio both ways from the start, so the microphone can come and go without offering
+      // again (replaceTrack).
+      this.#useAudio(pc.addTransceiver("audio", { direction: "sendrecv" }));
       pc.createOffer()
         .then((offer) => pc.setLocalDescription(offer))
         .then(() => this.#signal({ description: pc.localDescription }))
@@ -356,6 +383,11 @@ class Link {
 
   #signal(data) {
     this.#room.message(this.partner, { link: this.#match, ...data });
+  }
+
+  #useAudio(audio) {
+    this.#audio = audio;
+    if (this.#microphone) this.microphone(this.#microphone);
   }
 
   #use(channel) {

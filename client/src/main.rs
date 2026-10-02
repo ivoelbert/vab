@@ -4,6 +4,7 @@ mod emulator;
 mod help;
 mod player;
 mod room;
+mod voice;
 
 use bevy::asset::AssetId;
 use bevy::asset::AssetMetaCheck;
@@ -14,6 +15,7 @@ use emulator::EmulatorPlugin;
 use help::HelpPlugin;
 use player::{PlayerPlugin, Walkable, spawn_player};
 use room::RoomPlugin;
+use voice::VoicePlugin;
 use world::{Map, map_sprite};
 
 /// The bar, made with the editor (`make editor`) and built into the client.
@@ -51,6 +53,7 @@ fn main() {
         EmulatorPlugin,
         HelpPlugin,
         RoomPlugin,
+        VoicePlugin,
     ))
     .init_state::<Mode>()
     .insert_resource(ClearColor(Color::srgb(0.05, 0.05, 0.08)))

@@ -247,6 +247,6 @@ fn walk_others(time: Res<Time>, mut others: Query<(&mut Other, &mut Transform)>)
 }
 
 /// A color per player, so they can tell each other apart until there are real characters.
-fn tint(id: u32) -> Color {
+pub fn tint(id: u32) -> Color {
     Color::hsl((id % 360) as f32, 0.7, 0.75)
 }
