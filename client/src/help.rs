@@ -1,7 +1,9 @@
 //! Telling players the controls. A welcome panel with them shows on a first visit (the page
 //! remembers it in a cookie) and again with /help in the chat; any key closes it. When a game
 //! starts, a card lists its controls for a while, named the way the game names its buttons (the
-//! core says, e.g. "Z  Low Punch"); /help while playing shows it again.
+//! core says, e.g. "Z  Low Punch"); /help while playing shows it again. On a touch screen the
+//! panel tells of the controls on the screen instead, a tap closes it, and there is no card:
+//! the buttons carry the game's names (touch.rs).
 
 use std::cell::RefCell;
 
@@ -13,6 +15,7 @@ use wasm_bindgen::prelude::*;
 use crate::Mode;
 use crate::chat::type_in_chat;
 use crate::emulator::{KEYS, PlayingGame};
+use crate::touch::{Touch, read_touches};
 
 /// How long a game's card stays up, in seconds.
 const CARD_FOR: f32 = 12.0;
@@ -37,6 +40,22 @@ const AT_A_CABINET: [(&str, &str); 5] = [
     ("Esc", "Stand up"),
 ];
 const KEY_COLUMN: usize = 18;
+/// The same on a touch screen, short enough for a phone held upright.
+const IN_THE_BAR_TOUCH: [(&str, &str); 5] = [
+    ("Drag", "Walk"),
+    ("Play", "Sit at the cabinet by you"),
+    ("Watch", "Watch the game there"),
+    ("Chat", "Talk to the bar"),
+    ("/name Mauri", "Set your name, in chat"),
+];
+const AT_A_CABINET_TOUCH: [(&str, &str); 5] = [
+    ("Coin", "Insert a coin"),
+    ("Start", "Start"),
+    ("Drag", "Move"),
+    ("Buttons", "Named as the game does"),
+    ("Leave", "Stand up"),
+];
+const KEY_COLUMN_TOUCH: usize = 13;
 /// The RetroPad's Start (libretro.h).
 const START: u16 = 3;
 
@@ -44,6 +63,10 @@ thread_local! {
     static WELCOME: RefCell<bool> = const { RefCell::new(false) };
     static BUTTONS: RefCell<Option<Vec<(u16, String)>>> = const { RefCell::new(None) };
 }
+
+/// What the game being played calls its buttons, by RetroPad id, once the page has said.
+#[derive(Resource, Default)]
+pub struct GameButtons(pub Vec<(u16, String)>);
 
 /// Called by index.html on a first visit.
 #[wasm_bindgen]
@@ -76,7 +99,7 @@ pub struct Help {
 }
 
 impl Help {
-    /// The welcome panel is up, and keys are for closing it.
+    /// The welcome panel is up, and keys and taps are for closing it.
     pub fn is_open(&self) -> bool {
         self.open
     }
@@ -92,12 +115,17 @@ pub struct HelpPlugin;
 impl Plugin for HelpPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Help>()
+            .init_resource::<GameButtons>()
             .add_message::<ShowHelp>()
             .add_systems(Startup, spawn_help)
-            // After the chat has seen (and ignored) the key, so it doesn't open the chat too.
+            // After the chat has seen (and ignored) the key, so it doesn't open the chat too,
+            // and the touch controls the tap, so it doesn't press a button too.
             .add_systems(
                 PreUpdate,
-                close_panel.after(InputSystems).after(type_in_chat),
+                close_panel
+                    .after(InputSystems)
+                    .after(type_in_chat)
+                    .after(read_touches),
             )
             .add_systems(Update, (show_help, list_buttons, show_card).chain())
             .add_systems(OnExit(Mode::Playing), |mut help: ResMut<Help>| {
@@ -112,7 +140,22 @@ struct Panel;
 #[derive(Component)]
 struct Card;
 
-fn spawn_help(mut commands: Commands) {
+fn spawn_help(mut commands: Commands, touch: Res<Touch>) {
+    let (in_the_bar, at_a_cabinet, key_column, close): (&[_], &[_], _, _) = if touch.is_on() {
+        (
+            &IN_THE_BAR_TOUCH,
+            &AT_A_CABINET_TOUCH,
+            KEY_COLUMN_TOUCH,
+            "Tap to play",
+        )
+    } else {
+        (
+            &IN_THE_BAR,
+            &AT_A_CABINET,
+            KEY_COLUMN,
+            "Press any key to play",
+        )
+    };
     commands
         .spawn((
             Panel,
@@ -149,12 +192,12 @@ fn spawn_help(mut commands: Commands) {
                         .spawn(text("", 14.0, Color::WHITE))
                         .with_children(|body| {
                             let sections: [(&str, &[(&str, &str)]); 2] =
-                                [("In the bar", &IN_THE_BAR), ("At a cabinet", &AT_A_CABINET)];
+                                [("In the bar", in_the_bar), ("At a cabinet", at_a_cabinet)];
                             for (i, (heading, rows)) in sections.into_iter().enumerate() {
                                 let gap = if i == 0 { "" } else { "\n" };
                                 body.spawn(span(&format!("{gap}{heading}\n"), DIM));
                                 for (key, what) in rows {
-                                    body.spawn(span(&format!("{key:<KEY_COLUMN$}"), KEY_COLOR));
+                                    body.spawn(span(&format!("{key:<key_column$}"), KEY_COLOR));
                                     body.spawn(span(&format!("{what}\n"), Color::WHITE));
                                 }
                             }
@@ -163,7 +206,7 @@ fn spawn_help(mut commands: Commands) {
                                 DIM,
                             ));
                         });
-                    panel.spawn(text("Press any key to play", 14.0, KEY_COLOR));
+                    panel.spawn(text(close, 14.0, KEY_COLOR));
                 });
         });
 
@@ -223,12 +266,16 @@ fn row(parent: &mut ChildSpawnerCommands, key: &str, what: &str, key_width: f32,
     });
 }
 
-/// Any key closes the welcome panel, and does nothing else.
+/// Any key or tap closes the welcome panel, and does nothing else.
 fn close_panel(
     mut keyboard: MessageReader<KeyboardInput>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
+    touches: Res<Touches>,
     mut help: ResMut<Help>,
 ) {
+    if help.open && touches.any_just_pressed() {
+        help.open = false;
+    }
     for key in keyboard.read() {
         if help.open && key.state == ButtonState::Pressed {
             help.open = false;
@@ -242,12 +289,14 @@ fn show_help(
     mut help: ResMut<Help>,
     mode: Res<State<Mode>>,
     game: Option<Res<PlayingGame>>,
+    touch: Res<Touch>,
     time: Res<Time>,
     mut panel: Single<&mut Visibility, With<Panel>>,
 ) {
     let welcome = WELCOME.take();
-    // Watching, there are no buttons to list: the panel instead.
-    let playing = *mode.get() == Mode::Playing && game.is_some_and(|game| !game.watching);
+    // Watching, there are no buttons to list, and on a touch screen no keys: the panel instead.
+    let playing =
+        *mode.get() == Mode::Playing && game.is_some_and(|game| !game.watching) && !touch.is_on();
     for _ in asked.read() {
         if playing {
             help.card_until = time.elapsed_secs() + CARD_FOR;
@@ -264,10 +313,12 @@ fn show_help(
 }
 
 /// Fills the card with the game's controls once the page says what its buttons are, and
-/// shows it for a while.
+/// shows it for a while. A touch screen lays out its pad from them instead (touch.rs).
 fn list_buttons(
     mut commands: Commands,
     mut help: ResMut<Help>,
+    mut game_buttons: ResMut<GameButtons>,
+    touch: Res<Touch>,
     game: Option<Res<PlayingGame>>,
     time: Res<Time>,
     card: Single<Entity, With<Card>>,
@@ -325,7 +376,10 @@ fn list_buttons(
             row(card, "Esc", "Stand up", 70.0, 13.0);
             row(card, "Y", "Chat", 70.0, 13.0);
         });
-    help.card_until = time.elapsed_secs() + CARD_FOR;
+    game_buttons.0 = buttons;
+    if !touch.is_on() {
+        help.card_until = time.elapsed_secs() + CARD_FOR;
+    }
 }
 
 fn show_card(

@@ -1,6 +1,7 @@
 //! Cabinets with a game (assigned in the editor): next to one, a hint shows its title and how
 //! many play and watch it. E sits you at it (online with whoever sits at the other seats), and F
-//! watches the game being played there, as does E once every seat is taken.
+//! watches the game being played there, as does E once every seat is taken. On a touch screen
+//! Play and Watch buttons show instead (touch.rs).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -14,6 +15,7 @@ use crate::chat::chat_closed;
 use crate::emulator;
 use crate::help::help_closed;
 use crate::player::Player;
+use crate::touch::{self, Touch, TouchButton};
 
 /// The games cabinets can run, built into the client like the map.
 const GAMES: &str = include_str!("../../assets/games.ron");
@@ -97,7 +99,28 @@ impl Cabinets {
 #[derive(Component)]
 struct Hint;
 
-fn spawn_hint(mut commands: Commands) {
+fn spawn_hint(mut commands: Commands, touch: Res<Touch>) {
+    if touch.is_on() {
+        commands.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(16.0),
+                bottom: Val::Px(24.0),
+                column_gap: Val::Px(10.0),
+                ..default()
+            },
+            children![
+                (
+                    touch::button(TouchButton::Watch, "Watch", 96.0, 48.0),
+                    Visibility::Hidden,
+                ),
+                (
+                    touch::button(TouchButton::Play, "Play", 96.0, 48.0),
+                    Visibility::Hidden,
+                ),
+            ],
+        ));
+    }
     commands.spawn((
         Hint,
         Text::new(""),
@@ -116,16 +139,36 @@ fn spawn_hint(mut commands: Commands) {
     ));
 }
 
-/// Shows the hint above the cabinet next to the player, centered on it.
+/// Shows the hint above the cabinet next to the player, centered on it, and on a touch screen
+/// the buttons for what can be done there.
 fn show_hint(
     cabinets: Res<Cabinets>,
+    touch: Res<Touch>,
     player: Single<&Player>,
     camera: Single<(&Camera, &GlobalTransform)>,
     hint: Single<(&mut Text, &mut Node, &mut Visibility, &ComputedNode), With<Hint>>,
+    mut buttons: Query<(&TouchButton, &mut Visibility), Without<Hint>>,
 ) {
     let (mut text, mut node, mut visibility, computed) = hint.into_inner();
     let (camera, camera_transform) = *camera;
-    let Some((cell, game)) = cabinets.next_to(player.feet) else {
+    let near = cabinets.next_to(player.feet);
+    for (button, mut shown) in &mut buttons {
+        let offered = near.is_some_and(|(cell, game)| {
+            let (seated, _) = people_at(*cell);
+            match button {
+                TouchButton::Play => seated < game.players,
+                _ => seated > 0,
+            }
+        });
+        if matches!(button, TouchButton::Play | TouchButton::Watch) {
+            shown.set_if_neq(if offered {
+                Visibility::Inherited
+            } else {
+                Visibility::Hidden
+            });
+        }
+    }
+    let Some((cell, game)) = near else {
         *visibility = Visibility::Hidden;
         return;
     };
@@ -136,6 +179,13 @@ fn show_hint(
     let (seated, watching) = people_at(*cell);
     let title = &game.title;
     let label = match (seated, watching) {
+        // The buttons say what to press.
+        (0, 0) if touch.is_on() => title.clone(),
+        (0, w) if touch.is_on() => format!("{title} - {w} watching"),
+        (n, 0) if touch.is_on() => format!("{title} - {n} of {} playing", game.players),
+        (n, w) if touch.is_on() => {
+            format!("{title} - {n} of {} playing, {w} watching", game.players)
+        }
         (0, 0) => format!("E  {title}"),
         (0, w) => format!("E  {title} - {w} watching"),
         (n, 0) if n >= game.players => format!("E  Watch {title} - {n} playing"),
@@ -161,12 +211,14 @@ fn show_hint(
 fn play(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
+    touch: Res<Touch>,
     cabinets: Res<Cabinets>,
     player: Single<&Player>,
     mut mode: ResMut<NextState<Mode>>,
 ) {
-    let sit = keys.just_pressed(KeyCode::KeyE);
-    if !sit && !keys.just_pressed(KeyCode::KeyF) {
+    let sit = keys.just_pressed(KeyCode::KeyE) || touch.tapped(TouchButton::Play);
+    let watch = keys.just_pressed(KeyCode::KeyF) || touch.tapped(TouchButton::Watch);
+    if !sit && !watch {
         return;
     }
     let Some((cell, game)) = cabinets.next_to(player.feet) else {
@@ -188,6 +240,14 @@ fn play(
     mode.set(Mode::Playing);
 }
 
-fn hide_hint(mut hint: Single<&mut Visibility, With<Hint>>) {
+fn hide_hint(
+    mut hint: Single<&mut Visibility, With<Hint>>,
+    mut buttons: Query<(&TouchButton, &mut Visibility), Without<Hint>>,
+) {
     **hint = Visibility::Hidden;
+    for (button, mut shown) in &mut buttons {
+        if matches!(button, TouchButton::Play | TouchButton::Watch) {
+            *shown = Visibility::Hidden;
+        }
+    }
 }

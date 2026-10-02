@@ -1,5 +1,6 @@
-//! A placeholder player that walks the bar with the arrow keys or WASD. It can stand on
-//! floor tiles without an object, and slides along whatever blocks it.
+//! A placeholder player that walks the bar with the arrow keys or WASD, or a thumb dragged on
+//! a touch screen (touch.rs). It can stand on floor tiles without an object, and slides along
+//! whatever blocks it.
 
 use std::collections::HashSet;
 
@@ -11,11 +12,14 @@ use crate::Mode;
 use crate::chat::chat_closed;
 use crate::help::help_closed;
 use crate::room;
+use crate::touch::Touch;
 
 /// Walking speed in world pixels per second.
 const SPEED: f32 = 64.0;
 /// Roughly how many world pixels tall the view is; the zoom is the whole number closest to it.
 const VIEW_HEIGHT: f32 = 270.0;
+/// In a window much taller than wide (a phone held upright), how many it is wide instead.
+const VIEW_WIDTH: f32 = 240.0;
 
 pub struct PlayerPlugin;
 
@@ -89,6 +93,7 @@ pub fn spawn_player(commands: &mut Commands, asset_server: &AssetServer, walkabl
 
 fn walk(
     keys: Res<ButtonInput<KeyCode>>,
+    touch: Res<Touch>,
     time: Res<Time>,
     walkable: Res<Walkable>,
     mut players: Query<(&mut Player, &mut Transform, &mut Sprite)>,
@@ -104,6 +109,8 @@ fn walk(
             direction += towards;
         }
     }
+    // A thumb walks the way it points on the screen, which the halving below would flatten.
+    direction += touch.stick() * Vec2::new(1.0, 2.0);
     if direction == Vec2::ZERO {
         return;
     }
@@ -133,7 +140,8 @@ pub fn translation(feet: Vec2) -> Vec3 {
     feet.round().extend(1.0 + row * 0.001 + 0.0005)
 }
 
-/// Keeps the player in the middle of the view, at a whole-number zoom so pixels stay square.
+/// Keeps the player in the middle of the view, at a whole number of the screen's own pixels to
+/// each of the world's so they stay square (a phone has three or so to a logical one).
 fn follow(
     window: Single<&Window>,
     player: Single<&Player>,
@@ -144,6 +152,9 @@ fn follow(
     let target = (player.feet + Vec2::Y * TILE_HEIGHT).round();
     transform.translation = target.extend(transform.translation.z);
     if let Projection::Orthographic(ortho) = &mut *projection {
-        ortho.scale = 1.0 / (window.height() / VIEW_HEIGHT).round().max(1.0);
+        let tall = window.physical_height() as f32 / VIEW_HEIGHT;
+        let wide = window.physical_width() as f32 / VIEW_WIDTH;
+        let zoom = tall.min(wide).round().max(1.0);
+        ortho.scale = window.scale_factor() / zoom;
     }
 }

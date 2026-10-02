@@ -10,6 +10,13 @@ seat is taken (see [Watching](#watching)). Esc stands up. Y opens the chat for e
 show on a first visit and with `/help`; when a game starts, a card lists its buttons as the game
 names them (the core reports them, e.g. "Z  Low Punch").
 
+On a phone or tablet (a screen whose main pointer is a finger) the controls are on the screen
+instead (`client/src/touch.rs`): a thumb dragged anywhere walks and is the stick in a game, Play
+and Watch show by a cabinet, and at one the game's buttons sit under the right thumb, named as
+the game names them, with Coin, Start and Leave. The chat is typed in the page's own box, since
+a canvas can't bring up a phone's keyboard. Chrome's device toolbar shows all of it on a computer,
+as long as its pixel ratio is left at the computer's own (an emulated one gets the canvas size wrong).
+
 | Path | What | Built with |
 | --- | --- | --- |
 | `client/` | Bevy app, mounted on `<canvas id="bevy">`; its text font (Fira Mono cut to Latin-1, OFL) is in `fonts/` | `cargo` + `wasm-bindgen` → `web/pkg/` |
