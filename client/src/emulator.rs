@@ -3,7 +3,7 @@
 //! or has them watch the game the players there are playing. Frames come in through
 //! `push_frame` and fill the screen, a status line (who you play with, the connection) through
 //! `game_status`, the player's buttons go out through `emulatorInput`, and Esc stops the game
-//! and returns to the bar.
+//! and returns to the bar. On a touch screen the buttons are on the screen (touch.rs).
 
 use std::cell::RefCell;
 
@@ -15,6 +15,7 @@ use world::Game;
 
 use crate::Mode;
 use crate::chat::{Chat, chat_closed};
+use crate::touch::{self, Touch, TouchButton};
 
 /// Keys and the RetroPad button ids (libretro.h) they press. FBNeo maps MK's panel to
 /// A S D = high punch, high kick, block and Z X C = low punch, low kick, block.
@@ -119,6 +120,7 @@ impl Plugin for EmulatorPlugin {
                 Update,
                 (
                     show_latest_frame,
+                    fit_screen,
                     show_status,
                     send_input,
                     leave.run_if(chat_closed),
@@ -141,15 +143,20 @@ struct Screen;
 #[derive(Component)]
 struct Status;
 
-fn show_screen(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
-    commands.spawn((
+fn show_screen(mut commands: Commands, mut images: ResMut<Assets<Image>>, touch: Res<Touch>) {
+    let mut overlay = commands.spawn((
         Overlay,
         Node {
             position_type: PositionType::Absolute,
             width: Val::Percent(100.0),
             height: Val::Percent(100.0),
             justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
+            // A phone held upright has the game at the top, and the thumbs below it.
+            align_items: if touch.is_on() {
+                AlignItems::Start
+            } else {
+                AlignItems::Center
+            },
             ..default()
         },
         BackgroundColor(Color::BLACK),
@@ -160,7 +167,6 @@ fn show_screen(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                 ImageNode::new(images.add(screen_image(4, 3))),
                 Node {
                     height: Val::Percent(100.0),
-                    max_width: Val::Percent(100.0),
                     aspect_ratio: Some(4.0 / 3.0),
                     ..default()
                 },
@@ -169,7 +175,7 @@ fn show_screen(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                 Status,
                 Text::new(""),
                 TextFont {
-                    font_size: FontSize::Px(14.0),
+                    font_size: FontSize::Px(if touch.is_on() { 11.0 } else { 14.0 }),
                     ..default()
                 },
                 TextColor(Color::WHITE),
@@ -177,6 +183,12 @@ fn show_screen(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                     position_type: PositionType::Absolute,
                     top: Val::Px(8.0),
                     left: Val::Px(8.0),
+                    // On a phone, clear of the buttons in the other corner.
+                    max_width: if touch.is_on() {
+                        Val::Percent(60.0)
+                    } else {
+                        Val::Auto
+                    },
                     padding: UiRect::axes(Val::Px(6.0), Val::Px(3.0)),
                     ..default()
                 },
@@ -186,6 +198,55 @@ fn show_screen(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
             ),
         ],
     ));
+    if touch.is_on() {
+        // In the corner, left of the page's Chat button (web/index.html).
+        overlay.with_child((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(8.0),
+                right: Val::Px(80.0),
+                ..default()
+            },
+            ZIndex(1),
+            children![touch::button(TouchButton::Leave, "Leave", 64.0, 36.0)],
+        ));
+    }
+}
+
+/// How much of the top of a phone held upright is kept for the status line and Leave.
+const TOP_BAR: f32 = 52.0;
+
+/// Makes the screen as big as fits: the window's height, or its width in a window taller than
+/// the game's monitor.
+fn fit_screen(
+    window: Single<&Window>,
+    touch: Res<Touch>,
+    mut overlay: Single<&mut Node, (With<Overlay>, Without<Screen>)>,
+    mut screens: Query<&mut Node, With<Screen>>,
+) {
+    for mut node in &mut screens {
+        let Some(aspect) = node.aspect_ratio else {
+            continue;
+        };
+        let tall = window.width() < window.height() * aspect;
+        let (width, height) = if tall {
+            (Val::Percent(100.0), Val::Auto)
+        } else {
+            (Val::Auto, Val::Percent(100.0))
+        };
+        if node.width != width {
+            node.width = width;
+            node.height = height;
+        }
+        let top = if tall && touch.is_on() {
+            Val::Px(TOP_BAR)
+        } else {
+            Val::Px(0.0)
+        };
+        if overlay.padding.top != top {
+            overlay.padding.top = top;
+        }
+    }
 }
 
 /// A black image the size of a game frame, for the screen to start with.
@@ -233,20 +294,25 @@ fn show_status(mut status: Single<&mut Text, With<Status>>) {
     }
 }
 
-fn send_input(keys: Res<ButtonInput<KeyCode>>, chat: Res<Chat>, mut sent: Local<u16>) {
+fn send_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    chat: Res<Chat>,
+    touch: Res<Touch>,
+    mut sent: Local<u16>,
+) {
     // While typing in the chat, the player's hands are off the controls.
     let mask = KEYS
         .iter()
         .filter(|(key, _)| !chat.is_open() && keys.pressed(*key))
-        .fold(0, |mask, (_, id)| mask | 1 << id);
+        .fold(touch.pad(), |mask, (_, id)| mask | 1 << id);
     if mask != *sent {
         emulator_input(mask);
         *sent = mask;
     }
 }
 
-fn leave(keys: Res<ButtonInput<KeyCode>>, mut mode: ResMut<NextState<Mode>>) {
-    if keys.just_pressed(KeyCode::Escape) {
+fn leave(keys: Res<ButtonInput<KeyCode>>, touch: Res<Touch>, mut mode: ResMut<NextState<Mode>>) {
+    if keys.just_pressed(KeyCode::Escape) || touch.tapped(TouchButton::Leave) {
         mode.set(Mode::Walking);
     }
 }

@@ -15,11 +15,55 @@
       canvas {
         display: block;
         outline: none;
+        /* Fingers on the game are the game's: no scrolling, zooming or selecting. */
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+      }
+      /* The chat on touch screens. Its button sits right of Leave (client/src/emulator.rs). */
+      #chat,
+      #say input {
+        height: 36px;
+        box-sizing: border-box;
+        border: 1px solid rgba(255, 255, 255, 0.5);
+        border-radius: 18px;
+        background: rgba(0, 0, 0, 0.75);
+        color: #fff;
+        font-family: monospace;
+      }
+      #chat {
+        position: fixed;
+        top: 8px;
+        right: 8px;
+        width: 64px;
+        padding: 0;
+        font-size: 12px;
+        touch-action: manipulation;
+      }
+      #say {
+        position: fixed;
+        top: 8px;
+        left: 8px;
+        right: 80px;
+        margin: 0;
+      }
+      #say input {
+        width: 100%;
+        padding: 0 12px;
+        outline: none;
+        /* Smaller than this and iOS zooms the page in on the box. */
+        font-size: 16px;
       }
     </style>
   </head>
   <body>
     <canvas id="bevy"></canvas>
+    <!-- A canvas can't bring up a phone's keyboard: on touch screens the chat is typed here. -->
+    <button id="chat" hidden>Chat</button>
+    <form id="say" hidden>
+      <input maxlength="200" enterkeyhint="send" autocomplete="off" placeholder="Say something, or /name Mauri" />
+    </form>
     <script type="module">
       // wasm-bindgen output of the `client` crate (make client): the bar, the players and the
       // cabinets. Bevy reports where the player walks and starts and stops games through the
@@ -28,6 +72,7 @@
         cabinet_seats,
         cabinet_watchers,
         chat_said,
+        chat_typed,
         game_buttons,
         game_status,
         help_welcome,
@@ -39,14 +84,40 @@
       } from "./pkg/client.js";
       import { Room } from "./room.js";
 
-      // Browsers only allow sound after a user gesture: it starts on the first key or click.
+      // A phone or tablet: Bevy shows controls for fingers (client/src/touch.rs).
+      const touch = matchMedia("(pointer: coarse)").matches;
+      window.touchScreen = () => touch;
+      /** What stands the player up from a cabinet. */
+      const leave = touch ? "Leave" : "Esc";
+
+      // Browsers only allow sound after a user gesture: it starts on the first key, click or
+      // tap (a finger counts when it lifts, not when it lands), and again after a phone took
+      // the sound away while the page was in the background.
       const audio = new AudioContext({ sampleRate: 48000 });
       await audio.audioWorklet.addModule("./emulator/audio.js");
       const speaker = new AudioWorkletNode(audio, "emulator-audio", { outputChannelCount: [2] });
       speaker.connect(audio.destination);
-      for (const event of ["keydown", "pointerdown"]) {
-        addEventListener(event, () => audio.resume(), { capture: true, once: true });
+      for (const event of ["keydown", "pointerdown", "pointerup", "touchend"]) {
+        addEventListener(event, () => audio.state === "running" || audio.resume(), { capture: true });
       }
+      // iOS: play with the ring switch on silent too, as games do.
+      if (navigator.audioSession) navigator.audioSession.type = "playback";
+
+      // A phone dims and locks when nobody touches it, as when watching a game. The lock goes
+      // when the page is hidden, and is taken again when it's back.
+      let awake;
+      async function stayAwake(on) {
+        awake?.release();
+        awake = undefined;
+        if (!on) return;
+        const lock = await navigator.wakeLock?.request("screen").catch(() => undefined);
+        // Unless the player stood up meanwhile.
+        if (play && !awake) awake = lock;
+        else lock?.release();
+      }
+      document.addEventListener("visibilitychange", () => {
+        if (play && document.visibilityState === "visible") stayAwake(true);
+      });
 
       // The bar room this page is in (server/src/lib.rs): ?room=<name> for a private one.
       let room;
@@ -205,7 +276,7 @@
           } else {
             this.#show(`Player ${seat + 1}. Joining the game...`);
             this.#joinTimeout = setTimeout(
-              () => this.#playing || this.#show("Couldn't join the game. Esc and try again."),
+              () => this.#playing || this.#show(`Couldn't join the game. ${leave} and try again.`),
               20000,
             );
           }
@@ -388,9 +459,9 @@
 
         #show() {
           const playing = this.#seated.flatMap((id, seat) => (id === null ? [] : [names.get(id) ?? `player ${seat + 1}`]));
-          if (!playing.length) return game_status("Nobody is playing right now. Esc to go back.");
+          if (!playing.length) return game_status(`Nobody is playing right now. ${leave} to go back.`);
           if (!this.#source) return game_status("Watching. Waiting for the game...");
-          game_status(`Watching ${list(playing)}. Esc to go back.`);
+          game_status(`Watching ${list(playing)}. ${leave} to go back.`);
         }
       }
 
@@ -398,6 +469,7 @@
       window.emulatorPlay = async (core, rom, bios, cabinet, turns, players) => {
         play?.stop();
         const current = (play = new Play({ core, rom, bios, turns, players, cabinet }));
+        stayAwake(true);
         game_status("Taking a seat...");
         await joined;
         if (play !== current) return;
@@ -407,12 +479,14 @@
       window.emulatorWatch = (core, rom, bios, cabinet, turns) => {
         play?.stop();
         const current = (play = new Watch({ core, rom, bios, turns, cabinet }));
+        stayAwake(true);
         game_status("Watching. Loading the game...");
         joined.then(() => play === current && current.seated(room.seats.get(cabinet) ?? []));
       };
       window.emulatorStop = () => {
         play?.stop();
         play = undefined;
+        stayAwake(false);
         room?.stand();
       };
       window.emulatorInput = (mask) => play?.input(mask);
@@ -445,7 +519,7 @@
           if (play?.cabinet === cabinet) play.seated(players);
         },
         full(cabinet) {
-          if (play?.cabinet === cabinet) game_status("All seats are taken. Esc to go back.");
+          if (play?.cabinet === cabinet) game_status(`All seats are taken. ${leave} to go back.`);
         },
         watchers(cabinet, players) {
           cabinet_watchers(cabinet, players.length);
@@ -463,6 +537,25 @@
       }
       if (firstMove) room.move(...firstMove);
       roomReady();
+
+      if (touch) {
+        const chat = document.getElementById("chat");
+        const say = document.getElementById("say");
+        const typed = say.querySelector("input");
+        chat.hidden = false;
+        // Focused from the tap itself: only then does a phone bring up its keyboard.
+        chat.onclick = () => {
+          say.hidden = false;
+          typed.focus();
+        };
+        typed.onblur = () => (say.hidden = true);
+        say.onsubmit = (event) => {
+          event.preventDefault();
+          chat_typed(typed.value);
+          typed.value = "";
+          typed.blur();
+        };
+      }
       document.getElementById("bevy").focus();
     </script>
   </body>
