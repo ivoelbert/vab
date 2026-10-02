@@ -9,7 +9,7 @@ use bevy::prelude::*;
 use bevy::sprite::Anchor;
 use wasm_bindgen::prelude::*;
 
-use crate::player::{self, Player};
+use crate::player::{self, Player, Zoom};
 
 /// A little faster than walking, so others catch up with where they said they are.
 const SPEED: f32 = 80.0;
@@ -122,6 +122,7 @@ fn spawn_name(commands: &mut Commands, name: String) -> Entity {
 fn apply_updates(
     mut commands: Commands,
     asset_server: Res<AssetServer>,
+    zoom: Res<Zoom>,
     mut others: Local<HashMap<u32, Entity>>,
     mut query: Query<(&mut Other, &mut Sprite, &NameTag)>,
     mut names: Query<&mut Text, With<NameText>>,
@@ -158,7 +159,7 @@ fn apply_updates(
                         Other { feet, target: feet },
                         sprite,
                         Anchor::BOTTOM_CENTER,
-                        Transform::from_translation(player::translation(feet)),
+                        Transform::from_translation(player::translation(feet, zoom.0)),
                         tag,
                     ))
                     .id();
@@ -229,7 +230,7 @@ fn place_names(
     }
 }
 
-fn walk_others(time: Res<Time>, mut others: Query<(&mut Other, &mut Transform)>) {
+fn walk_others(time: Res<Time>, zoom: Res<Zoom>, mut others: Query<(&mut Other, &mut Transform)>) {
     for (mut other, mut transform) in &mut others {
         let to_go = other.target - other.feet;
         if to_go.length() > SNAP {
@@ -242,7 +243,7 @@ fn walk_others(time: Res<Time>, mut others: Query<(&mut Other, &mut Transform)>)
                 other.feet + to_go.normalize() * step
             };
         }
-        transform.translation = player::translation(other.feet);
+        transform.translation = player::translation(other.feet, zoom.0);
     }
 }
 
