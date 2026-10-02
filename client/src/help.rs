@@ -51,7 +51,7 @@ const IN_THE_BAR_TOUCH: [(&str, &str); 5] = [
 const AT_A_CABINET_TOUCH: [(&str, &str); 5] = [
     ("Coin", "Insert a coin"),
     ("Start", "Start"),
-    ("Drag", "Move"),
+    ("Arrows", "Move"),
     ("Buttons", "Named as the game does"),
     ("Leave", "Stand up"),
 ];

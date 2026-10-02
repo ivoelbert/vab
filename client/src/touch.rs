@@ -1,10 +1,12 @@
 //! Touch controls, for phones and tablets: the page says when the screen is one
-//! (web/index.html). A thumb dragged anywhere off the buttons is the stick: it walks the bar,
-//! and moves in a game. Buttons are UI nodes with a [`TouchButton`], spawned by whoever knows
-//! what they do, who then asks [`Touch`] about them: Play and Watch by a cabinet (cabinets.rs)
-//! and Leave at one (emulator.rs). The game's own buttons are here: the pad, under the right
-//! thumb, laid out like the keys and named as the game names them. The chat is the page's, as
-//! a canvas can't bring up a phone's keyboard.
+//! (web/index.html). In the bar a thumb dragged anywhere off the buttons is the stick, and
+//! walks. Buttons are UI nodes with a [`TouchButton`], spawned by whoever knows what they do,
+//! who then asks [`Touch`] about them: Play and Watch by a cabinet (cabinets.rs) and Leave at
+//! one (emulator.rs). The game's own controls are here: the pad, with its buttons under the
+//! right thumb, laid out like the keys and named as the game names them, and a d-pad under the
+//! left. The d-pad stays put, unlike the stick in the bar, so that each way is always in the
+//! same place to tap twice or roll through, as a fighting game's moves ask. The chat is the
+//! page's, as a canvas can't bring up a phone's keyboard.
 
 use bevy::input::InputSystems;
 use bevy::prelude::*;
@@ -19,6 +21,10 @@ use crate::help::{GameButtons, Help};
 const REACH: f32 = 40.0;
 const DEAD: f32 = 10.0;
 const KNOB: f32 = 44.0;
+/// The d-pad across, each of its arms, and how far outside it a thumb still lands on it.
+const DPAD: f32 = 144.0;
+const ARM: f32 = DPAD / 3.0;
+const DPAD_SLOP: f32 = 24.0;
 /// The pad's buttons across, and the space between them.
 const BUTTON: f32 = 60.0;
 const GAP: f32 = 10.0;
@@ -70,6 +76,8 @@ struct Thumb {
     id: u64,
     from: Vec2,
     at: Vec2,
+    /// On the d-pad, whose middle stays where it is.
+    on_dpad: bool,
 }
 
 impl Touch {
@@ -101,7 +109,7 @@ impl Touch {
         }
     }
 
-    /// The RetroPad mask of the stick, as a cabinet's 8-way one, and the pad's buttons.
+    /// The RetroPad mask of the d-pad, as a cabinet's 8-way stick, and the pad's buttons.
     pub fn pad(&self) -> u16 {
         let stick = self.stick().normalize_or_zero();
         // Each way takes the 135 degrees around it, so two share the 45 of a diagonal.
@@ -142,6 +150,7 @@ impl Plugin for TouchPlugin {
                 (
                     show_stick,
                     light_buttons,
+                    light_dpad,
                     lay_out_pad
                         .run_if(in_state(Mode::Playing).and_then(resource_changed::<GameButtons>)),
                 ),
@@ -160,6 +169,7 @@ pub fn read_touches(
         &UiGlobalTransform,
         &InheritedVisibility,
     )>,
+    dpad: Query<(&ComputedNode, &UiGlobalTransform), With<Dpad>>,
     mut touch: ResMut<Touch>,
 ) {
     touch.held.clear();
@@ -178,16 +188,28 @@ pub fn read_touches(
             })
             .map(|(button, ..)| *button)
     };
+    // The d-pad's middle and how far from it a thumb lands on it, while a game has one.
+    let dpad = dpad.single().ok().map(|(node, transform)| {
+        let scale = node.inverse_scale_factor();
+        let reach = node.size().x * scale / 2.0 + DPAD_SLOP;
+        (transform.translation * scale, reach)
+    });
     for finger in touches.iter_just_pressed() {
-        match button_at(finger.position()) {
+        let at = finger.position();
+        match button_at(at) {
             Some(button) => touch.tapped.push(button),
-            // The first finger down off the buttons takes the stick.
             None if touch.thumb.is_none() => {
-                let at = finger.position();
-                touch.thumb = Some(Thumb {
+                // The stick is the d-pad where there is one, for the thumb that lands on it.
+                // In the bar it is wherever the first finger off the buttons lands.
+                let from = match dpad {
+                    Some((middle, reach)) => (at.distance(middle) <= reach).then_some(middle),
+                    None => Some(at),
+                };
+                touch.thumb = from.map(|from| Thumb {
                     id: finger.id(),
-                    from: at,
+                    from,
                     at,
+                    on_dpad: dpad.is_some(),
                 });
             }
             None => {}
@@ -195,8 +217,10 @@ pub fn read_touches(
     }
     touch.thumb = touch.thumb.take().and_then(|mut thumb| {
         thumb.at = touches.get_pressed(thumb.id)?.position();
-        // Pulled past its reach the stick comes along, so the way back is never long.
-        thumb.from = thumb.at - (thumb.at - thumb.from).clamp_length_max(REACH);
+        if !thumb.on_dpad {
+            // Pulled past its reach the stick comes along, so the way back is never long.
+            thumb.from = thumb.at - (thumb.at - thumb.from).clamp_length_max(REACH);
+        }
         Some(thumb)
     });
     // A button is held by a finger on it now, wherever that finger landed: thumbs roll from
@@ -294,7 +318,8 @@ fn spawn_stick(mut commands: Commands) {
 
 fn show_stick(touch: Res<Touch>, mut parts: Query<(&StickPart, &mut Node, &mut Visibility)>) {
     for (part, mut node, mut visibility) in &mut parts {
-        let Some(thumb) = &touch.thumb else {
+        // The d-pad shows itself.
+        let Some(thumb) = touch.thumb.as_ref().filter(|thumb| !thumb.on_dpad) else {
             visibility.set_if_neq(Visibility::Hidden);
             continue;
         };
@@ -308,9 +333,17 @@ fn show_stick(touch: Res<Touch>, mut parts: Query<(&StickPart, &mut Node, &mut V
     }
 }
 
-/// The game's buttons, in the bottom-right corner.
+/// The game's controls: its buttons in the bottom-right corner, the d-pad in the bottom-left.
 #[derive(Component)]
 struct Pad;
+
+/// The d-pad: a thumb on it pushes the way it is from the middle.
+#[derive(Component)]
+pub struct Dpad;
+
+/// One of the d-pad's four arms, by RetroPad id, lit while its way is pushed.
+#[derive(Component)]
+struct DpadArm(u16);
 
 /// Lays out the pad once the page says what the game calls its buttons (not for a watcher).
 fn lay_out_pad(
@@ -374,10 +407,94 @@ fn lay_out_pad(
                 });
             }
         });
+    commands
+        .spawn((
+            Pad,
+            Dpad,
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(12.0),
+                bottom: Val::Px(24.0),
+                width: Val::Px(DPAD),
+                height: Val::Px(DPAD),
+                border_radius: BorderRadius::MAX,
+                ..default()
+            },
+            BackgroundColor(FILL),
+            GlobalZIndex(2),
+        ))
+        .with_children(|dpad| {
+            // The arms of a cross, in thirds of the pad: the corners between them are the
+            // diagonals.
+            for (id, column, row) in [
+                (UP, 1.0, 0.0),
+                (LEFT, 0.0, 1.0),
+                (RIGHT, 2.0, 1.0),
+                (DOWN, 1.0, 2.0),
+            ] {
+                let upright = matches!(id, UP | DOWN);
+                dpad.spawn((
+                    DpadArm(id),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(column * ARM),
+                        top: Val::Px(row * ARM),
+                        width: Val::Px(ARM),
+                        height: Val::Px(ARM),
+                        flex_direction: if upright {
+                            FlexDirection::Column
+                        } else {
+                            FlexDirection::Row
+                        },
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        border: UiRect::all(Val::Px(1.0)),
+                        border_radius: BorderRadius::all(Val::Px(10.0)),
+                        ..default()
+                    },
+                    BackgroundColor(FILL),
+                    BorderColor::all(LINE),
+                ))
+                .with_children(|arm| {
+                    // An arrow in steps, like the bar's pixels: its point first, up and left.
+                    let mut steps = [6.0, 14.0, 22.0];
+                    if matches!(id, DOWN | RIGHT) {
+                        steps.reverse();
+                    }
+                    for step in steps {
+                        let (width, height) = if upright { (step, 5.0) } else { (5.0, step) };
+                        arm.spawn((
+                            Node {
+                                width: Val::Px(width),
+                                height: Val::Px(height),
+                                ..default()
+                            },
+                            BackgroundColor(Color::WHITE),
+                        ));
+                    }
+                });
+            }
+        });
 }
 
-fn remove_pad(mut commands: Commands, pads: Query<Entity, With<Pad>>) {
+fn light_dpad(touch: Res<Touch>, mut arms: Query<(&DpadArm, &mut BackgroundColor)>) {
+    let pushed = touch.pad();
+    for (arm, mut color) in &mut arms {
+        let fill = if pushed & 1 << arm.0 != 0 {
+            PRESSED
+        } else {
+            FILL
+        };
+        if color.0 != fill {
+            color.0 = fill;
+        }
+    }
+}
+
+fn remove_pad(mut commands: Commands, mut touch: ResMut<Touch>, pads: Query<Entity, With<Pad>>) {
     for pad in &pads {
         commands.entity(pad).despawn();
     }
+    // A thumb still on the d-pad doesn't walk the bar from there.
+    touch.thumb = None;
 }

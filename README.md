@@ -11,9 +11,10 @@ show on a first visit and with `/help`; when a game starts, a card lists its but
 names them (the core reports them, e.g. "Z  Low Punch").
 
 On a phone or tablet (a screen whose main pointer is a finger) the controls are on the screen
-instead (`client/src/touch.rs`): a thumb dragged anywhere walks and is the stick in a game, Play
-and Watch show by a cabinet, and at one the game's buttons sit under the right thumb, named as
-the game names them, with Coin, Start and Leave. The chat is typed in the page's own box, since
+instead (`client/src/touch.rs`): a thumb dragged anywhere walks, Play and Watch show by a cabinet,
+and at one a d-pad sits under the left thumb (fixed in place, so a move's sequence can be tapped
+or rolled through) and the game's buttons under the right, named as the game names them, with
+Coin, Start and Leave. The chat is typed in the page's own box, since
 a canvas can't bring up a phone's keyboard. Chrome's device toolbar shows all of it on a computer,
 as long as its pixel ratio is left at the computer's own (an emulated one gets the canvas size wrong).
 
