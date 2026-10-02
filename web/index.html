@@ -26,6 +26,7 @@
       // window functions below; the page tells it about the room and the game.
       import init, {
         cabinet_seats,
+        cabinet_watchers,
         chat_said,
         game_buttons,
         game_status,
@@ -70,10 +71,25 @@
         own_name(name);
       };
 
+      // Everyone else's names, for saying who plays a game.
+      const names = new Map();
+      const list = (items) => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`);
+
+      /** An emulator worker for a cabinet's game, its sound going to the speaker. */
+      function emulatorWorker(onmessage) {
+        const worker = new Worker("./emulator/worker.js", { type: "module" });
+        worker.onmessage = ({ data }) => onmessage(data);
+        const sound = new MessageChannel();
+        speaker.port.postMessage(sound.port1, [sound.port1]);
+        worker.postMessage({ type: "audio", port: sound.port2 }, [sound.port2]);
+        return worker;
+      }
+
       /**
        * The game at the cabinet this player sits at, alone or online with the others seated
        * there. When the players change, the lowest seat among those playing captures the game
        * and hands it to everyone, and all go on from there together (web/emulator/worker.js).
+       * The lowest seat playing also streams the game to whoever watches the cabinet.
        */
       class Play {
         seat;
@@ -94,6 +110,10 @@
         #handovers = new Map();
         #settle;
         #joinTimeout;
+        /** Who watches our cabinet, whether we stream to them, and who has our stream. */
+        #watchers = [];
+        #streaming = false;
+        #streamedTo = new Set();
 
         constructor(game) {
           this.#game = game;
@@ -115,6 +135,13 @@
           // People often sit down together: wait a moment and hand over once.
           clearTimeout(this.#settle);
           this.#settle = setTimeout(() => this.#handOver(), 300);
+        }
+
+        /** Who watches our cabinet changed. */
+        watchers(players) {
+          this.#watchers = players;
+          this.#stream();
+          if (this.#playing) this.#show(this.#status);
         }
 
         input(mask) {
@@ -143,16 +170,14 @@
 
         #start(seat) {
           this.seat = seat;
-          const worker = (this.#worker = new Worker("./emulator/worker.js", { type: "module" }));
-          worker.onmessage = ({ data }) => {
+          const worker = (this.#worker = emulatorWorker((data) => {
             if (data.type === "frame") push_frame(data.rgba, data.width, data.height);
             if (data.type === "buttons") game_buttons(data.buttons.map(([id, name]) => `${id}\t${name}`).join("\n"));
             if (data.type === "captured") this.#captured(data);
             if (data.type === "netplay") this.#netplay(data);
-          };
-          const sound = new MessageChannel();
-          speaker.port.postMessage(sound.port1, [sound.port1]);
-          worker.postMessage({ type: "audio", port: sound.port2 }, [sound.port2]);
+            if (data.type === "watch-state") room.watchState(data.to, data.stream, data.bytes);
+            if (data.type === "watch-inputs") room.watchInputs(data.stream, data.frame, data.inputs);
+          }));
           // Game packets between our worker and the other players' ([seat, packet]).
           const packets = (this.#packets = new MessageChannel());
           packets.port1.onmessage = ({ data: [seat, packet] }) =>
@@ -205,6 +230,7 @@
           this.#players = new Map(this.#seated);
           this.#epoch++;
           this.#worker.postMessage({ type: "capture", epoch: this.#epoch });
+          this.#stream();
         }
 
         /** Our worker captured the game: hand it to the others, and go on with them. */
@@ -234,6 +260,7 @@
           const seats = [...this.#players.keys()].sort((a, b) => a - b);
           this.#worker.postMessage({ type: "online", epoch, seats, state }, state ? [state.buffer] : []);
           this.#playing = true;
+          this.#stream();
           this.#show(`Player ${this.seat + 1}. Connecting to ${this.#others()}...`);
         }
 
@@ -241,6 +268,7 @@
           this.#playing = true;
           this.#players = players;
           this.#linkPlayers();
+          this.#stream();
           const seats = this.#game.players;
           this.#show(`Player ${this.seat + 1}.${seats > 1 ? " Anyone who sits at this cabinet joins you." : ""}`);
         }
@@ -264,6 +292,27 @@
           }
         }
 
+        /**
+         * Streams our game to the watchers if we're the lowest seat playing: a state to each
+         * one who just came (the worker sends one to all when it starts), then everyone's
+         * inputs as GGRS confirms them.
+         */
+        #stream() {
+          if (!this.#worker) return;
+          const on = this.#playing && this.#watchers.length > 0 && Math.min(...this.#players.keys()) === this.seat;
+          if (on !== this.#streaming) {
+            this.#streaming = on;
+            this.#streamedTo = new Set(on ? this.#watchers : []);
+            this.#worker.postMessage({ type: "stream", on });
+            return;
+          }
+          if (!on) return;
+          for (const id of this.#watchers) {
+            if (!this.#streamedTo.has(id)) this.#worker.postMessage({ type: "snapshot", to: id });
+          }
+          this.#streamedTo = new Set(this.#watchers);
+        }
+
         #others() {
           const seats = [...this.#players.keys()].filter((seat) => seat !== this.seat).map((seat) => seat + 1);
           return seats.length === 1 ? `player ${seats[0]}` : `players ${seats.slice(0, -1).join(", ")} and ${seats.at(-1)}`;
@@ -282,7 +331,66 @@
 
         #show(text) {
           this.#status = text;
-          game_status(text);
+          const watching = this.#watchers.length;
+          game_status(watching ? `${text} (${watching} watching)` : text);
+        }
+      }
+
+      /**
+       * Watching the game at a cabinet: one of its players streams it here and our own worker
+       * runs it a little behind them (web/emulator/worker.js). The room hears we watch once the
+       * game is loaded, and the streaming player then sends us a state to start from.
+       */
+      class Watch {
+        #worker;
+        /** The stream our worker plays ("player/stream"), from the last state that came. */
+        #source;
+        #seated = [];
+
+        constructor({ core, rom, bios, turns, cabinet }) {
+          this.cabinet = cabinet;
+          this.#worker = emulatorWorker((data) => {
+            if (data.type === "frame") push_frame(data.rgba, data.width, data.height);
+            if (data.type === "ready") joined.then(() => play === this && room.watch(this.cabinet));
+          });
+          this.#worker.postMessage({
+            type: "start",
+            core: `/fbneo/${core}/fbneo.mjs`,
+            rom: `/roms/${rom}.zip`,
+            files: bios ? [`/roms/${bios}.zip`] : [],
+            turns,
+            hold: true,
+          });
+        }
+
+        /** Who sits at the cabinet changed. */
+        seated(players) {
+          this.#seated = players;
+          this.#show();
+        }
+
+        watchState(from, stream, bytes) {
+          this.#source = `${from}/${stream}`;
+          this.#worker.postMessage({ type: "watch-state", bytes }, [bytes.buffer]);
+          this.#show();
+        }
+
+        watchInputs(from, stream, frame, inputs) {
+          if (`${from}/${stream}` !== this.#source) return;
+          this.#worker.postMessage({ type: "watch-inputs", frame, inputs }, [inputs.buffer]);
+        }
+
+        input() {}
+
+        stop() {
+          this.#worker.terminate();
+        }
+
+        #show() {
+          const playing = this.#seated.flatMap((id, seat) => (id === null ? [] : [names.get(id) ?? `player ${seat + 1}`]));
+          if (!playing.length) return game_status("Nobody is playing right now. Esc to go back.");
+          if (!this.#source) return game_status("Watching. Waiting for the game...");
+          game_status(`Watching ${list(playing)}. Esc to go back.`);
         }
       }
 
@@ -292,7 +400,15 @@
         const current = (play = new Play({ core, rom, bios, turns, players, cabinet }));
         game_status("Taking a seat...");
         await joined;
-        if (play === current) room.sit(cabinet, players);
+        if (play !== current) return;
+        room.sit(cabinet, players);
+        current.watchers(room.watchers.get(cabinet) ?? []);
+      };
+      window.emulatorWatch = (core, rom, bios, cabinet, turns) => {
+        play?.stop();
+        const current = (play = new Watch({ core, rom, bios, turns, cabinet }));
+        game_status("Watching. Loading the game...");
+        joined.then(() => play === current && current.seated(room.seats.get(cabinet) ?? []));
       };
       window.emulatorStop = () => {
         play?.stop();
@@ -315,8 +431,14 @@
           players_reset();
           own_name(name);
         },
-        moved: player_moved,
-        left: player_left,
+        moved(id, x, y, flip, name) {
+          names.set(id, name);
+          player_moved(id, x, y, flip, name);
+        },
+        left(id) {
+          names.delete(id);
+          player_left(id);
+        },
         said: (id, name, text) => chat_said(name, text),
         seats(cabinet, players) {
           cabinet_seats(cabinet, players.filter((id) => id !== null).length);
@@ -325,8 +447,14 @@
         full(cabinet) {
           if (play?.cabinet === cabinet) game_status("All seats are taken. Esc to go back.");
         },
-        message: (from, data) => play?.message(from, data),
-        handover: (from, epoch, bytes) => play?.handover(from, epoch, bytes),
+        watchers(cabinet, players) {
+          cabinet_watchers(cabinet, players.length);
+          if (play?.cabinet === cabinet) play.watchers?.(players);
+        },
+        message: (from, data) => play?.message?.(from, data),
+        handover: (from, epoch, bytes) => play?.handover?.(from, epoch, bytes),
+        watchState: (from, stream, bytes) => play?.watchState?.(from, stream, bytes),
+        watchInputs: (from, stream, frame, inputs) => play?.watchInputs?.(from, stream, frame, inputs),
       }, cookie("name"));
       // First visit: the controls.
       if (!cookie("welcomed")) {

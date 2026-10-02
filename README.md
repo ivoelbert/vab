@@ -4,7 +4,8 @@ The page shows the bar from `assets/maps/bar.ron` (made with `make editor`) and 
 player: arrows or WASD walk, and floor tiles without an object are walkable. Everyone on the page
 is in the same bar room and sees the others walk around (`?room=<name>` opens a separate one).
 E next to a cabinet sits you at it: you start its game, or join the one being played there
-(see [Online play](#online-play)). Esc stands up. Y opens the chat for everyone in the room;
+(see [Online play](#online-play)). F watches the game being played there, as does E once every
+seat is taken (see [Watching](#watching)). Esc stands up. Y opens the chat for everyone in the room;
 `/name <name>` there sets the name shown above your head, and a cookie keeps it. The controls
 show on a first visit and with `/help`; when a game starts, a card lists its buttons as the game
 names them (the core reports them, e.g. "Z  Low Punch").
@@ -123,8 +124,19 @@ Game packets go through the room's WebSocket at first and straight between the b
 WebRTC once that connects (`web/room.js`). Turn-based games (`turns`) use player 1's controls for
 both players, like an upright cabinet.
 
+## Watching
+
+Anyone can watch a cabinet's game. Each watcher's browser runs the game itself, a little behind
+the players: the lowest seat playing sends them a state, then every player's input for each frame
+once GGRS has confirmed it, so no rollback can change it. Inputs go out about ten times a second,
+to everyone watching through one message to the room (address 0), and each watcher keeps a few
+frames in hand so they play evenly. When the players change, the new session starts a new stream
+with a fresh state. Watchers cost the players nothing: their game never pauses for one.
+
 `emulator/netplay-check.mjs` plays a game between workers in Node over a simulated network:
-player 1 alone, the others dropping in one by one, then player 2 leaving (needs `make netplay`):
+player 1 alone, the others dropping in one by one, then player 2 leaving. Player 1 streams to a
+watcher the whole time, and a machine in the script checks the stream against fresh states from
+player 1 every 1.5 s (needs `make netplay`):
 
 ```sh
 PLAYERS=4 node emulator/netplay-check.mjs emulator/dist/konami/fbneo.mjs $HOME/Downloads/ssriders.zip emulator/dist/ssriders.state

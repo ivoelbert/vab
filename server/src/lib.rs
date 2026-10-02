@@ -106,7 +106,8 @@ fn not_found() -> Result<Response> {
 }
 
 /// A bar room: everyone in it sees each other walk around and who plays at which cabinet, and
-/// the players at a cabinet (up to 4) find each other here to play online. WebSockets go through
+/// the players at a cabinet (up to 4) find each other here to play online. Anyone else can watch
+/// a cabinet's game: one of its players streams it to them through the room. WebSockets go through
 /// the Hibernation API, so an idle room is evicted from memory while its connections stay open;
 /// what the room knows about each player lives on their socket (its attachment), and each
 /// socket is tagged with its player's id.
@@ -115,7 +116,8 @@ fn not_found() -> Result<Response> {
 ///
 /// Text messages are JSON (`FromPlayer`, `ToPlayer`). Binary messages are for another player,
 /// passed on as they are but for the address: `[to: u32 LE][bytes]` in, `[from: u32 LE][bytes]`
-/// out. The page sends game packets this way until WebRTC connects, and hands games over.
+/// out. The page sends game packets this way until WebRTC connects, and hands games over. A
+/// seated player sending to `WATCHERS` reaches everyone watching their cabinet.
 #[durable_object]
 pub struct Room {
     state: State,
@@ -131,7 +133,13 @@ struct Player {
     at: Option<Position>,
     /// Where they're playing.
     seat: Option<Seat>,
+    /// The cabinet ("x,y") whose game they watch.
+    #[serde(default)]
+    watching: Option<String>,
 }
+
+/// The address of everyone watching the sender's cabinet; no player has this id.
+const WATCHERS: u32 = 0;
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
 struct Position {
@@ -160,6 +168,11 @@ enum FromPlayer {
         cabinet: String,
         seats: Option<usize>,
     },
+    /// Watch the game at a cabinet, leaving any seat.
+    Watch {
+        cabinet: String,
+    },
+    /// Leave the seat, or stop watching.
     Stand,
     /// Change the player's name (it's trimmed to 20 characters).
     Name {
@@ -186,6 +199,7 @@ enum ToPlayer<'a> {
         name: &'a str,
         players: Vec<PlayerAt>,
         seats: BTreeMap<String, Vec<Option<u32>>>,
+        watchers: BTreeMap<String, Vec<u32>>,
     },
     /// Also how a newcomer first shows up, and how a new name spreads.
     Moved(PlayerAt),
@@ -206,6 +220,11 @@ enum ToPlayer<'a> {
     /// All seats were taken.
     Full {
         cabinet: &'a str,
+    },
+    /// Who watches a cabinet's game now.
+    Watchers {
+        cabinet: &'a str,
+        players: Vec<u32>,
     },
     Signal {
         from: u32,
@@ -280,15 +299,49 @@ impl Room {
         seats
     }
 
-    /// Frees the player's seat, if they have one, and tells everyone.
+    /// Who watches `cabinet`, leaving out the player `except` (who is leaving).
+    fn watchers_of(&self, cabinet: &str, except: u32) -> Vec<u32> {
+        self.players()
+            .into_iter()
+            .filter(|(_, player)| player.id != except)
+            .filter(|(_, player)| player.watching.as_deref() == Some(cabinet))
+            .map(|(_, player)| player.id)
+            .collect()
+    }
+
+    /// Frees the player's seat or stops them watching, and tells everyone.
     fn stand(&self, ws: &WebSocket, player: &mut Player) -> Result<()> {
-        let Some(seat) = player.seat.take() else {
+        let seat = player.seat.take();
+        let watching = player.watching.take();
+        if seat.is_none() && watching.is_none() {
             return Ok(());
-        };
+        }
         ws.serialize_attachment(&*player)?;
-        let players = self.seats_at(&seat.cabinet, player.id);
-        let cabinet = &seat.cabinet;
-        self.broadcast(&ToPlayer::Seats { cabinet, players })
+        if let Some(seat) = seat {
+            let players = self.seats_at(&seat.cabinet, player.id);
+            let cabinet = &seat.cabinet;
+            self.broadcast(&ToPlayer::Seats { cabinet, players })?;
+        }
+        if let Some(cabinet) = watching {
+            let players = self.watchers_of(&cabinet, player.id);
+            let cabinet = &cabinet;
+            self.broadcast(&ToPlayer::Watchers { cabinet, players })?;
+        }
+        Ok(())
+    }
+
+    fn watch(&self, ws: &WebSocket, player: &mut Player, cabinet: String) -> Result<()> {
+        if player.watching.as_ref() == Some(&cabinet) {
+            return Ok(());
+        }
+        self.stand(ws, player)?;
+        player.watching = Some(cabinet.clone());
+        ws.serialize_attachment(&*player)?;
+        let players = self.watchers_of(&cabinet, 0);
+        self.broadcast(&ToPlayer::Watchers {
+            cabinet: &cabinet,
+            players,
+        })
     }
 
     fn sit(&self, ws: &WebSocket, player: &mut Player, cabinet: String, of: usize) -> Result<()> {
@@ -329,7 +382,37 @@ impl Room {
             let cabinet = &seat.cabinet;
             self.broadcast(&ToPlayer::Seats { cabinet, players })?;
         }
+        if let Some(cabinet) = &player.watching {
+            let players = self.watchers_of(cabinet, player.id);
+            self.broadcast(&ToPlayer::Watchers { cabinet, players })?;
+        }
         self.broadcast(&ToPlayer::Left { id: player.id })
+    }
+
+    /// Passes on a binary message from `player`: to another player, or to everyone watching
+    /// the player's cabinet.
+    fn pass_on(&self, player: &Player, mut message: Vec<u8>) -> Result<()> {
+        if message.len() < 4 {
+            return Ok(());
+        }
+        let to = u32::from_le_bytes([message[0], message[1], message[2], message[3]]);
+        message[..4].copy_from_slice(&player.id.to_le_bytes());
+        if to != WATCHERS {
+            if let Some(other) = self.socket_of(to) {
+                other.send_with_bytes(message)?;
+            }
+            return Ok(());
+        }
+        let Some(seat) = &player.seat else {
+            return Ok(());
+        };
+        for (ws, other) in self.players() {
+            if other.watching.as_ref() == Some(&seat.cabinet) {
+                // A socket that is closing can't take it; the others still should.
+                let _ = ws.send_with_bytes(&message);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -345,7 +428,7 @@ impl DurableObject for Room {
         let others = self.players();
         let id = loop {
             let id = (js_sys::Math::random() * u32::MAX as f64) as u32;
-            if !others.iter().any(|(_, player)| player.id == id) {
+            if id != WATCHERS && !others.iter().any(|(_, player)| player.id == id) {
                 break id;
             }
         };
@@ -357,15 +440,20 @@ impl DurableObject for Room {
             name: format!("Guest {:04}", id % 10000),
             at: None,
             seat: None,
+            watching: None,
         };
         pair.server.serialize_attachment(&player)?;
 
         let mut seats = BTreeMap::<String, Vec<Option<u32>>>::new();
+        let mut watchers = BTreeMap::<String, Vec<u32>>::new();
         for (_, other) in &others {
             if let Some(seat) = &other.seat {
                 let players = seats.entry(seat.cabinet.clone()).or_default();
                 players.resize(players.len().max(seat.of), None);
                 players[seat.index] = Some(other.id);
+            }
+            if let Some(cabinet) = &other.watching {
+                watchers.entry(cabinet.clone()).or_default().push(other.id);
             }
         }
         let players = others
@@ -383,6 +471,7 @@ impl DurableObject for Room {
             name: &player.name,
             players,
             seats,
+            watchers,
         })?;
         Response::from_websocket(pair.client)
     }
@@ -397,19 +486,7 @@ impl DurableObject for Room {
         };
         let text = match message {
             WebSocketIncomingMessage::String(text) => text,
-            WebSocketIncomingMessage::Binary(bytes) => {
-                // For another player: swap the address for the sender's.
-                if bytes.len() < 4 {
-                    return Ok(());
-                }
-                let to = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-                if let Some(other) = self.socket_of(to) {
-                    let mut message = bytes;
-                    message[..4].copy_from_slice(&player.id.to_le_bytes());
-                    other.send_with_bytes(message)?;
-                }
-                return Ok(());
-            }
+            WebSocketIncomingMessage::Binary(bytes) => return self.pass_on(&player, bytes),
         };
         match serde_json::from_str::<FromPlayer>(&text)? {
             FromPlayer::Move(at) => {
@@ -451,6 +528,7 @@ impl DurableObject for Room {
                 let of = seats.unwrap_or(2).clamp(1, 4);
                 self.sit(&ws, &mut player, cabinet, of)?;
             }
+            FromPlayer::Watch { cabinet } => self.watch(&ws, &mut player, cabinet)?,
             FromPlayer::Stand => self.stand(&ws, &mut player)?,
             FromPlayer::Signal { to, data } => {
                 if let Some(other) = self.socket_of(to) {

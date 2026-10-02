@@ -1,5 +1,6 @@
 //! Cabinets with a game (assigned in the editor): next to one, a hint shows its title and how
-//! many play it, and E sits you at it (online with whoever sits at the other seat).
+//! many play and watch it. E sits you at it (online with whoever sits at the other seats), and F
+//! watches the game being played there, as does E once every seat is taken.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -22,12 +23,27 @@ const HINT_HEIGHT: f32 = 44.0;
 thread_local! {
     /// How many sit at each cabinet ("x,y"), from the room.
     static SEATED: RefCell<HashMap<String, u32>> = RefCell::new(HashMap::new());
+    /// How many watch each cabinet's game.
+    static WATCHING: RefCell<HashMap<String, u32>> = RefCell::new(HashMap::new());
 }
 
 /// Called by index.html when the players at a cabinet change.
 #[wasm_bindgen]
 pub fn cabinet_seats(cabinet: String, count: u32) {
     SEATED.with_borrow_mut(|seated| seated.insert(cabinet, count));
+}
+
+/// Called by index.html when the people watching a cabinet's game change.
+#[wasm_bindgen]
+pub fn cabinet_watchers(cabinet: String, count: u32) {
+    WATCHING.with_borrow_mut(|watching| watching.insert(cabinet, count));
+}
+
+/// How many sit at the cabinet in `cell`, and how many watch its game.
+fn people_at(cell: IVec2) -> (u32, u32) {
+    let cabinet = emulator::cabinet_id(cell);
+    let count = |counts: &HashMap<String, u32>| counts.get(&cabinet).copied().unwrap_or(0);
+    (SEATED.with_borrow(count), WATCHING.with_borrow(count))
 }
 
 pub struct CabinetsPlugin;
@@ -117,18 +133,20 @@ fn show_hint(
     let Ok(on_screen) = camera.world_to_viewport(camera_transform, above.extend(0.0)) else {
         return;
     };
-    let seated = SEATED.with_borrow(|seated| {
-        seated
-            .get(&emulator::cabinet_id(*cell))
-            .copied()
-            .unwrap_or(0)
-    });
-    let label = match seated {
-        0 => format!("E  {}", game.title),
-        n if n >= game.players => format!("{} - {n} playing", game.title),
-        n => format!(
-            "E  {} - {n} of {} playing, join in",
-            game.title, game.players
+    let (seated, watching) = people_at(*cell);
+    let title = &game.title;
+    let label = match (seated, watching) {
+        (0, 0) => format!("E  {title}"),
+        (0, w) => format!("E  {title} - {w} watching"),
+        (n, 0) if n >= game.players => format!("E  Watch {title} - {n} playing"),
+        (n, w) if n >= game.players => format!("E  Watch {title} - {n} playing, {w} watching"),
+        (n, 0) => format!(
+            "E  {title} - {n} of {} playing, join in   F  Watch",
+            game.players
+        ),
+        (n, w) => format!(
+            "E  {title} - {n} of {} playing, join in   F  Watch ({w} watching)",
+            game.players
         ),
     };
     if text.0 != label {
@@ -147,15 +165,27 @@ fn play(
     player: Single<&Player>,
     mut mode: ResMut<NextState<Mode>>,
 ) {
-    if !keys.just_pressed(KeyCode::KeyE) {
+    let sit = keys.just_pressed(KeyCode::KeyE);
+    if !sit && !keys.just_pressed(KeyCode::KeyF) {
         return;
     }
-    if let Some((cell, game)) = cabinets.next_to(player.feet) {
-        emulator::play(*cell, game);
-        let title = game.title.clone();
-        commands.insert_resource(emulator::PlayingGame { title });
-        mode.set(Mode::Playing);
+    let Some((cell, game)) = cabinets.next_to(player.feet) else {
+        return;
+    };
+    let (seated, _) = people_at(*cell);
+    // E sits down, or watches once every seat is taken; F watches whoever plays.
+    let watching = !sit || seated >= game.players;
+    if watching && seated == 0 {
+        return;
     }
+    if watching {
+        emulator::watch(*cell, game);
+    } else {
+        emulator::play(*cell, game);
+    }
+    let title = game.title.clone();
+    commands.insert_resource(emulator::PlayingGame { title, watching });
+    mode.set(Mode::Playing);
 }
 
 fn hide_hint(mut hint: Single<&mut Visibility, With<Hint>>) {
